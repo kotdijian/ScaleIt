@@ -22,7 +22,12 @@ class PhotoView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.pix=None; self.marks=[]; self.start=None
+    def clear(self):
+        self.scene().clear(); self.scene().setSceneRect(0,0,0,0)
+        self.pix=None; self.marks=[]; self.start=None
+        self.resetTransform()
     def load(self,path,width,height):
+        self.clear()
         reader=QImageReader(str(path))
         # Image geometry must match COLMAP; do not silently EXIF-rotate it.
         reader.setAutoTransform(False)
@@ -96,7 +101,11 @@ class Window(QMainWindow):
         layout.addWidget(QLabel('同じ目盛りを複数写真で指定。ホイール: 拡大縮小 / ドラッグ: 移動 / クリック: 選択点を追加・更新'))
         splitter=QSplitter(); layout.addWidget(splitter,1)
         left=QWidget(); ll=QVBoxLayout(left)
+        ll.addWidget(QLabel('打点用写真（指定フォルダにあるCOLMAP登録画像のみ）'))
+        self.image_summary=QLabel('画像フォルダを指定して「読み込み」を押してください。')
+        self.image_summary.setWordWrap(True); ll.addWidget(self.image_summary)
         self.photo_names=QComboBox(); self.photo_names.currentTextChanged.connect(self.show_photo)
+        self.photo_names.setEnabled(False)
         ll.addWidget(self.photo_names)
         self.photo=PhotoView(); self.photo.clicked.connect(self.add_observation); ll.addWidget(self.photo,1)
         self.photo_status=QLabel('未読み込み'); ll.addWidget(self.photo_status); splitter.addWidget(left)
@@ -142,18 +151,36 @@ class Window(QMainWindow):
         if hasattr(self,'report'): self.report.setPlainText('入力が変更されました。縮尺を計算してください。')
     def invalidate_source(self,*args):
         self.model=None; self.image_valid=False; self.current_name=None
+        if hasattr(self,'photo_names'):
+            self.photo_names.blockSignals(True); self.photo_names.clear(); self.photo_names.blockSignals(False)
+            self.photo_names.setEnabled(False); self.photo.clear()
+            self.photo_status.setText('入力先が変更されました。「読み込み」を押してください。')
+            self.image_summary.setText('未読み込み')
         self.invalidate()
     def load(self, preserve=False):
         candidate=Model(self.paths['model'].text())
-        root=Path(self.paths['images'].text())
+        root=Path(self.paths['images'].text()).resolve()
         if not root.is_dir(): raise ValueError('対応画像フォルダを選択してください。')
+        available=[]
+        for name in sorted(candidate.images):
+            path=(root/name).resolve()
+            if path.is_relative_to(root) and path.is_file(): available.append(name)
         if not preserve: self.observations={}
         self.model=candidate; self.invalidate()
         self.photo_names.blockSignals(True); self.photo_names.clear()
-        self.photo_names.addItems(sorted(candidate.images)); self.photo_names.blockSignals(False)
+        self.photo_names.addItems(available); self.photo_names.blockSignals(False)
+        self.photo_names.setEnabled(bool(available))
+        self.image_summary.setText(
+            f'打点用画像: {len(available)}枚 / COLMAP登録: {len(candidate.images)}台 / '
+            f'画像未配置: {len(candidate.images)-len(available)}枚\n'
+            '写真一覧だけを絞り込みます。全カメラ情報は計算・出力用に保持します。')
+        self.photo.clear(); self.current_name=None; self.image_valid=False
+        if not available:
+            self.photo_status.setText('対応する画像がありません。補正画像のフォルダ・ファイル名・相対パスを確認してください。')
         self.show_photo(self.photo_names.currentText()); self.refresh_observations()
     def show_photo(self,name):
         self.current_name=None; self.image_valid=False
+        self.photo.clear()
         if not self.model or not name: return
         try:
             camera=self.model.camera(name)
