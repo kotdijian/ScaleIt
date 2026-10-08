@@ -1,0 +1,26 @@
+{
+  "version": "0.1.0",
+  "paths": {
+    "model": "/Users/noguchiatsushi/Documents/GitHub/ScaleIt/ScaleBridge/demo/sparse",
+    "images": "/Users/noguchiatsushi/Documents/GitHub/ScaleIt/ScaleBridge/demo/images",
+    "xml": "/Users/noguchiatsushi/Documents/GitHub/ScaleIt/ScaleBridge/demo/original_cameras.xml"
+  },
+  "model_fingerprint": "ffeba508c3c99d21d99679aab8354c4760836296429d97036d25630f2f6ff8a4",
+  "observations": {},
+  "bars": [
+    {
+      "a": "A",
+      "b": "B",
+      "length_m": 0.1,
+      "role": "scale"
+    },
+    {
+      "a": "A",
+      "b": "C",
+      "length_m": 0.08,
+      "role": "check"
+    }
+  ],
+  "min_angle_deg": 1,
+  "max_error_px": 2
+}
