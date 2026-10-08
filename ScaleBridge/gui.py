@@ -19,12 +19,15 @@ class PhotoView(QGraphicsView):
         super().__init__()
         self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.pix=None; self.marks=[]; self.start=None
+        self.pan_last=None; self.panning=False
     def clear(self):
         self.scene().clear(); self.scene().setSceneRect(0,0,0,0)
         self.pix=None; self.marks=[]; self.start=None
+        self.pan_last=None; self.panning=False
         self.resetTransform()
     def load(self,path,width,height):
         self.clear()
@@ -45,13 +48,27 @@ class PhotoView(QGraphicsView):
         self.scale(1.2 if event.angleDelta().y()>0 else 1/1.2,
                    1.2 if event.angleDelta().y()>0 else 1/1.2)
     def mousePressEvent(self,event):
-        self.start=event.position()
+        if event.button()==Qt.MouseButton.LeftButton:
+            self.start=event.position(); self.pan_last=event.position(); self.panning=False
+            event.accept(); return
         super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        if self.start is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            if self.panning or (event.position()-self.start).manhattanLength()>=4:
+                self.panning=True
+                delta=event.position()-self.pan_last
+                self.horizontalScrollBar().setValue(self.horizontalScrollBar().value()-round(delta.x()))
+                self.verticalScrollBar().setValue(self.verticalScrollBar().value()-round(delta.y()))
+                self.pan_last=event.position()
+            event.accept(); return
+        super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
         if self.pix and self.start is not None and event.button()==Qt.MouseButton.LeftButton:
-            if (event.position()-self.start).manhattanLength()<4:
-                xy=self.mapToScene(event.position().toPoint())
+            if not self.panning and (event.position()-self.start).manhattanLength()<4:
+                # Event position is the arrow cursor hotspot (tip), mapped to image coordinates.
+                xy=self.viewportTransform().inverted()[0].map(event.position())
                 if self.pix.boundingRect().contains(xy): self.clicked.emit(xy.x(),xy.y())
+        self.start=None; self.pan_last=None; self.panning=False
         super().mouseReleaseEvent(event)
     def markers(self,points,predictions=None):
         for item in self.marks: self.scene().removeItem(item)

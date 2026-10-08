@@ -99,3 +99,39 @@ def test_failed_image_read_clears_old_photo(tmp_path):
     assert not w.image_valid and w.current_name is None and w.photo.pix is None
     assert '画像を読み込めません' in w.photo_status.text()
     w.close()
+
+
+def test_arrow_tip_coordinates_and_drag(tmp_path):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QMouseEvent
+    app=QApplication.instance() or QApplication([])
+    data=create_demo(tmp_path/'demo');w=Window();w.show();app.processEvents()
+    for k,v in data['paths'].items():w.paths[k].setText(v)
+    w.load();app.processEvents();view=w.photo
+    view.scale(4,4)
+    point=view.mapFromScene(QPointF(640,480))
+    expected=view.mapToScene(point)
+    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    QTest.mouseClick(view.viewport(),Qt.MouseButton.LeftButton,pos=point)
+    np.testing.assert_allclose(w.observations['A'][w.current_name],[expected.x(),expected.y()],atol=1e-9)
+    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    fractional=QPointF(point)+QPointF(.25,.75)
+    for kind,button_state in [(QEvent.Type.MouseButtonPress,Qt.MouseButton.LeftButton),
+                              (QEvent.Type.MouseButtonRelease,Qt.MouseButton.NoButton)]:
+        event=QMouseEvent(kind,fractional,view.viewport().mapToGlobal(fractional.toPoint()),
+            Qt.MouseButton.LeftButton,button_state,Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(view.viewport(),event)
+    exact=view.viewportTransform().inverted()[0].map(fractional)
+    np.testing.assert_allclose(w.observations['A'][w.current_name],[exact.x(),exact.y()],atol=1e-9)
+    w.observations={};x0=view.horizontalScrollBar().value()
+    QTest.mousePress(view.viewport(),Qt.MouseButton.LeftButton,pos=point)
+    end=QPointF(point)+QPointF(30,20)
+    event=QMouseEvent(QEvent.Type.MouseMove,end,view.viewport().mapToGlobal(end.toPoint()),
+        Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(view.viewport(),event)
+    assert view.panning and view.horizontalScrollBar().value()!=x0
+    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    QTest.mouseRelease(view.viewport(),Qt.MouseButton.LeftButton,pos=end.toPoint())
+    assert not w.observations
+    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    w.close()
