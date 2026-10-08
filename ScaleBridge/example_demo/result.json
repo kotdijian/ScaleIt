@@ -1,0 +1,94 @@
+{
+  "version": "0.1.0",
+  "model_fingerprint": "ffeba508c3c99d21d99679aab8354c4760836296429d97036d25630f2f6ff8a4",
+  "meters_per_model_unit": 0.10000000000000005,
+  "points": {
+    "A": {
+      "xyz": [
+        0.0,
+        0.0,
+        4.9999999999999885
+      ],
+      "errors_px": {
+        "image_4.png": 5.684341886080801e-13,
+        "image_3.png": 5.684341886080801e-13,
+        "image_2.png": 1.1368683772161603e-12,
+        "image_1.png": 1.1368683772161603e-12
+      },
+      "rms_px": 8.987733679556354e-13,
+      "max_intersection_angle_deg": 43.60281897270364,
+      "warnings": []
+    },
+    "B": {
+      "xyz": [
+        0.9999999999999997,
+        0.0,
+        4.999999999999997
+      ],
+      "errors_px": {
+        "image_4.png": 1.1368683772161603e-13,
+        "image_3.png": 1.1368683772161603e-13,
+        "image_2.png": 2.2737367544323206e-13,
+        "image_1.png": 4.547473508864641e-13
+      },
+      "rms_px": 2.666192676669783e-13,
+      "max_intersection_angle_deg": 42.273689006093726,
+      "warnings": []
+    },
+    "C": {
+      "xyz": [
+        0.0,
+        0.7999999999999993,
+        4.999999999999995
+      ],
+      "errors_px": {
+        "image_4.png": 2.2737367544323206e-13,
+        "image_3.png": 2.2737367544323206e-13,
+        "image_2.png": 5.240704272917405e-13,
+        "image_1.png": 4.687428401686771e-13
+      },
+      "rms_px": 3.8657704262548816e-13,
+      "max_intersection_angle_deg": 43.10568586542192,
+      "warnings": []
+    }
+  },
+  "distances": [
+    {
+      "a": "A",
+      "b": "B",
+      "length_m": 0.1,
+      "role": "scale",
+      "weight": 1.0,
+      "distance_model": 0.9999999999999997,
+      "estimated_m": 0.10000000000000002,
+      "residual_m": 1.3877787807814457e-17,
+      "relative_error_percent": 1.3877787807814457e-14
+    },
+    {
+      "a": "A",
+      "b": "C",
+      "length_m": 0.08,
+      "role": "check",
+      "weight": 1.0,
+      "distance_model": 0.7999999999999993,
+      "estimated_m": 0.07999999999999996,
+      "residual_m": -4.163336342344337e-17,
+      "relative_error_percent": -5.204170427930421e-14
+    }
+  ],
+  "warnings": [],
+  "thresholds": {
+    "min_angle_deg": 1,
+    "max_error_px": 2
+  },
+  "method": "fixed-camera robust reprojection triangulation; weighted uniform scale",
+  "metashape_export": {
+    "unit": "m",
+    "xml_internal_multiplier": 0.2000000000000001,
+    "colmap_per_xml_unit": 2.0,
+    "camera_layout_relative_rms": 0.0,
+    "matched_cameras": 4,
+    "max_orientation_error_deg": 0.0,
+    "metashape_import_validation": "pending: must verify in installed Standard edition"
+  }
+}

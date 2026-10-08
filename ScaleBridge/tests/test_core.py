@@ -1,0 +1,191 @@
+import json
+from pathlib import Path
+import xml.etree.ElementTree as ET
+import numpy as np
+import pycolmap
+import pytest
+from core import Model, solve, triangulate, export_colmap, export_metashape
+
+
+def fixture_model(path, camera_model='PINHOLE',params=None,points=True):
+    path.mkdir()
+    params=params or [1200,1190,800,600]
+    (path/'cameras.txt').write_text(f'1 {camera_model} 1600 1200 '+' '.join(map(str,params))+'\n')
+    centers=[[-2,0,0],[2,0,0],[0,2,0],[0,-2,0]]
+    lines=[]
+    for i,c in enumerate(centers,1):
+        lines.extend([f'{i} 1 0 0 0 {-c[0]} {-c[1]} {-c[2]} 1 image_{i}.png',''])
+    (path/'images.txt').write_text('\n'.join(lines)+'\n')
+    if points:(path/'points3D.txt').write_text('7 0 0 5 10 20 30 0\n')
+    return Model(path)
+
+
+def obs(model,point,names=None):
+    return {n:model.project(n,np.array(point)).tolist() for n in (names or model.images)}
+
+
+def make_xml(path,model,k=2,offset=(10,20,30)):
+    root=ET.Element('document',version='2.0.0'); chunk=ET.SubElement(root,'chunk',id='0')
+    sensors=ET.SubElement(chunk,'sensors'); sensor=ET.SubElement(sensors,'sensor',id='0',type='frame')
+    ET.SubElement(sensor,'resolution',width='1600',height='1200')
+    calib=ET.SubElement(sensor,'calibration',type='frame',attrib={'class':'adjusted'})
+    ET.SubElement(calib,'resolution',width='1600',height='1200')
+    for tag,value in [('f','1190'),('b1','10'),('b2','0'),('cx','0'),('cy','0'),('k1','0.0001')]:
+        ET.SubElement(calib,tag).text=value
+    cameras=ET.SubElement(chunk,'cameras')
+    theta=.3; Q=np.array([[np.cos(theta),-np.sin(theta),0],[np.sin(theta),np.cos(theta),0],[0,0,1]])
+    for i,n in enumerate(model.images):
+        camera=ET.SubElement(cameras,'camera',id=str(i),label=n,sensor_id='0')
+        M=np.eye(4); M[:3,:3]=Q.T; M[:3,3]=Q.T@(model.center(n)-offset)/k
+        ET.SubElement(camera,'transform').text=' '.join(map(str,M.flat))
+        ET.SubElement(camera,'orientation').text='1'
+    tr=ET.SubElement(chunk,'transform')
+    ET.SubElement(tr,'rotation').text='1 0 0 0 1 0 0 0 1'
+    ET.SubElement(tr,'translation').text='100 200 300'; ET.SubElement(tr,'scale').text='17'
+    region=ET.SubElement(chunk,'region'); ET.SubElement(region,'center').text='1 2 3'; ET.SubElement(region,'size').text='4 5 6'
+    ET.ElementTree(root).write(path)
+
+
+@pytest.mark.parametrize('model_name,params',[
+ ('PINHOLE',[1200,1190,800,600]),('SIMPLE_RADIAL',[1200,800,600,.1]),
+ ('OPENCV',[1200,1190,800,600,.1,-.02,.001,-.002]),
+ ('FULL_OPENCV',[1200,1190,800,600,.1,-.02,.001,-.002,.001,.002,-.001,.0001]),
+ ('OPENCV_FISHEYE',[1200,1190,800,600,.01,-.002,.001,-.0001])])
+def test_lens_triangulation(tmp_path,model_name,params):
+    model=fixture_model(tmp_path/'model',model_name,params)
+    target=np.array([.12,.15,5.1]); r=triangulate(model,obs(model,target))
+    assert np.allclose(r['xyz'],target,atol=1e-8)
+    assert r['rms_px']<1e-7
+
+
+def test_scale_and_holdout(tmp_path):
+    model=fixture_model(tmp_path/'model')
+    observations={p:obs(model,q) for p,q in {'A':[0,0,5],'B':[1,0,5],'C':[0,.4,5]}.items()}
+    result=solve(model,observations,[{'a':'A','b':'B','length_m':.1},
+                                    {'a':'A','b':'C','length_m':.04,'role':'check'}])
+    assert result['meters_per_model_unit']==pytest.approx(.1)
+    assert result['distances'][1]['estimated_m']==pytest.approx(.04)
+    assert not result['warnings']
+
+
+def test_noise_and_outlier(tmp_path):
+    model=fixture_model(tmp_path/'model')
+    observations=obs(model,[.1,.2,5])
+    observations['image_1.png'][0]+=.2
+    assert np.linalg.norm(np.array(triangulate(model,observations)['xyz'])-[.1,.2,5])<.002
+    observations['image_1.png'][0]+=20
+    with pytest.raises(ValueError,match='Reprojection'):triangulate(model,observations)
+
+
+def test_invalid_geometry(tmp_path):
+    model=fixture_model(tmp_path/'model')
+    with pytest.raises(ValueError,match='two images'):triangulate(model,{'image_1.png':[800,600]})
+    with pytest.raises(ValueError,match='angle'):triangulate(model,{n:[800,600] for n in model.images})
+    with pytest.raises(ValueError,match='outside'):triangulate(model,{n:[-1,0] for n in model.images})
+    with pytest.raises(ValueError,match='behind'):model.project('image_1.png',np.array([0,0,-5]))
+
+
+def test_export_roundtrip_and_binary(tmp_path):
+    model=fixture_model(tmp_path/'model')
+    export_colmap(model,tmp_path/'scaled',.1,'mm')
+    scaled=Model(tmp_path/'scaled')
+    for name in model.images:
+        assert np.allclose(scaled.center(name),model.center(name)*100)
+        assert np.allclose(scaled.pose(name)[0],model.pose(name)[0])
+        assert np.allclose(scaled.camera(name).params,model.camera(name).params)
+        assert np.allclose(scaled.project(name,np.array([0,0,500])),model.project(name,np.array([0,0,5])))
+    assert np.allclose(scaled.rec.points3D[7].xyz,[0,0,500])
+    binary=tmp_path/'binary'; binary.mkdir(); model.rec.write_binary(str(binary))
+    imported=Model(binary)
+    assert len(imported.images)==4
+    with pytest.raises(ValueError,match='exists'):export_colmap(model,tmp_path/'scaled',1)
+
+
+def test_camera_only(tmp_path):
+    model=fixture_model(tmp_path/'model',points=False)
+    assert len(model.rec.points3D)==0
+    export_colmap(model,tmp_path/'out',.1)
+    assert len(Model(tmp_path/'out').images)==4
+
+
+def test_xml_correspondence(tmp_path):
+    model=fixture_model(tmp_path/'model'); xml=tmp_path/'original.xml'; make_xml(xml,model)
+    before=ET.parse(xml); output=tmp_path/'scaled.xml'
+    report=export_metashape(model,xml,output,.1)
+    assert report['xml_internal_multiplier']==pytest.approx(.2)
+    after=ET.parse(output)
+    assert before.find('./chunk/sensors/sensor/calibration/k1').text==after.find('./chunk/sensors/sensor/calibration/k1').text
+    assert after.find('./chunk/transform/scale').text=='1'
+    assert after.find('./chunk/transform/translation').text=='0 0 0'
+    orig=[np.fromstring(c.find('transform').text,sep=' ').reshape(4,4) for c in before.findall('./chunk/cameras/camera')]
+    new=[np.fromstring(c.find('transform').text,sep=' ').reshape(4,4) for c in after.findall('./chunk/cameras/camera')]
+    assert np.linalg.norm(new[0][:3,3]-new[1][:3,3])==pytest.approx(.4)
+    for a,b in zip(orig,new):
+        assert np.allclose(a[:3,:3],b[:3,:3]); assert np.allclose(a[:3,3]*.2,b[:3,3])
+    # Wrong alignment, changed baseline pattern: refuse export.
+    tree=ET.parse(xml); e=tree.find('./chunk/cameras/camera/transform')
+    vals=np.fromstring(e.text,sep=' '); vals[3]+=1; e.text=' '.join(map(str,vals)); tree.write(tmp_path/'bad.xml')
+    with pytest.raises(ValueError,match='disagree'):export_metashape(model,tmp_path/'bad.xml',tmp_path/'badout.xml',.1)
+
+
+def test_xml_reject_and_source_change(tmp_path):
+    model=fixture_model(tmp_path/'model'); xml=tmp_path/'x.xml'; make_xml(xml,model)
+    tree=ET.parse(xml); ET.SubElement(tree.find('chunk'),'reference').text='GEOGCS[WGS84]'; tree.write(xml)
+    with pytest.raises(ValueError,match='CRS'):export_metashape(model,xml,tmp_path/'out.xml',1)
+    with (model.folder/'images.txt').open('a') as f:f.write('# changed\n')
+    with pytest.raises(ValueError,match='changed'):export_colmap(model,tmp_path/'out',1)
+
+
+def test_nontrivial_rig_scale(tmp_path):
+    p=tmp_path/'rig'; p.mkdir()
+    (p/'cameras.txt').write_text('1 PINHOLE 1600 1200 1200 1200 800 600\n2 PINHOLE 1600 1200 1200 1200 800 600\n')
+    (p/'rigs.txt').write_text('1 2 CAMERA 1 CAMERA 2 1 1 0 0 0 0.3 0 0\n')
+    frames=[]; images=[]
+    for i,x in enumerate([-2,0,2],1):
+        frames.append(f'{i} 1 1 0 0 0 {-x} 0 0 2 CAMERA 1 {2*i-1} CAMERA 2 {2*i}')
+        images.extend([f'{2*i-1} 1 0 0 0 {-x} 0 0 1 ref{i}.png','',
+                       f'{2*i} 1 0 0 0 {-x+.3} 0 0 2 slave{i}.png',''])
+    (p/'frames.txt').write_text('\n'.join(frames)+'\n'); (p/'images.txt').write_text('\n'.join(images)+'\n')
+    (p/'points3D.txt').write_text('')
+    model=Model(p); export_colmap(model,tmp_path/'scaled',.1)
+    scaled=Model(tmp_path/'scaled')
+    for n in model.images:assert np.allclose(scaled.center(n),model.center(n)*.1)
+
+
+def test_rotated_cameras_and_two_view_solution(tmp_path):
+    from scipy.spatial.transform import Rotation
+    model=fixture_model(tmp_path/'model')
+    lines=[]
+    for i,n in enumerate(sorted(model.images),1):
+        R=Rotation.from_euler('y',(i-2)*5,degrees=True).as_matrix()
+        q=Rotation.from_matrix(R).as_quat(); t=-R@model.center(n)
+        lines.extend([f'{i} {q[3]} {q[0]} {q[1]} {q[2]} {t[0]} {t[1]} {t[2]} 1 {n}',''])
+    (model.folder/'images.txt').write_text('\n'.join(lines)+'\n'); model=Model(model.folder)
+    target=np.array([.1,.1,5])
+    r=triangulate(model,obs(model,target,list(model.images)[:2]))
+    assert np.allclose(r['xyz'],target,atol=1e-8) and r['warnings']
+    export_colmap(model,tmp_path/'out',.25)
+    scaled=Model(tmp_path/'out')
+    for n in model.images:assert np.allclose(scaled.project(n,target*.25),model.project(n,target))
+
+
+def test_weighted_scale_and_validation_exclusion(tmp_path):
+    model=fixture_model(tmp_path/'model')
+    observations={p:obs(model,q) for p,q in {'A':[0,0,5],'B':[1,0,5],'C':[0,.5,5]}.items()}
+    result=solve(model,observations,[{'a':'A','b':'B','length_m':.1,'weight':2},
+      {'a':'A','b':'C','length_m':.051,'weight':1},
+      {'a':'B','b':'C','length_m':100,'role':'check'}])
+    assert result['meters_per_model_unit']==pytest.approx((2*.1+.5*.051)/(2+.25))
+    assert result['warnings']
+    with pytest.raises(ValueError,match='positive'):
+        solve(model,observations,[{'a':'A','b':'B','length_m':float('nan')}])
+
+
+def test_xml_orientation_mismatch_and_whitespace_name(tmp_path):
+    model=fixture_model(tmp_path/'model'); xml=tmp_path/'x.xml'; make_xml(xml,model)
+    tree=ET.parse(xml); element=tree.find('./chunk/cameras/camera/transform')
+    M=np.fromstring(element.text,sep=' ').reshape(4,4); M[:3,:3]=np.eye(3)
+    element.text=' '.join(map(str,M.flat)); tree.write(xml)
+    with pytest.raises(ValueError,match='orientations'):export_metashape(model,xml,tmp_path/'out.xml',.1)
+    p=model.folder/'images.txt'; p.write_text(p.read_text().replace('image_1.png','image one.png'))
+    with pytest.raises(ValueError,match='whitespace'):Model(model.folder)
