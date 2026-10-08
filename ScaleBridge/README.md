@@ -17,6 +17,69 @@ python gui.py
 
 初回に必要なパッケージをダウンロードします。以降の計算と画像表示はローカルで行い、写真はアップロードしません。PySide6/pycolmapのMac用wheelが使用するPython/OSに対応している必要があります。Linux・Python 3.12・pycolmap 4.2.1で検証しました。M3 Mac上では未検証です。
 
+## Windows 11での起動
+
+Python 3.12の64bit版とPython Launcherをインストールしてください。リポジトリを取得・展開し、PowerShellで `ScaleBridge` フォルダ（このREADMEと `gui.py` がある場所）を開きます。
+
+初回セットアップと起動：
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe gui.py
+```
+
+2回目以降は同じフォルダで次だけを実行します。
+
+```powershell
+.\.venv\Scripts\python.exe gui.py
+```
+
+仮想環境を有効化するスクリプトは使用しないため、PowerShellの実行ポリシーを変更する必要はありません。`py` が見つからない場合はPython Launcherのインストールを確認してください。パッケージのインストールが失敗した場合はPython 3.12・64bit版であることを確認してください。
+
+Scale Bridgeの計算・画像表示にはCUDA、PyTorch、SAM3は不要です。初回の依存パッケージ取得にはネット接続が必要ですが、その後の画像表示と縮尺計算はローカルで行います。Windows 11実機での起動・Metashapeとの往復は未検証です。
+
+## Metashapeからのデータの書き出し
+
+### 1. 同じアラインメントを準備
+
+スケールが写っている写真を含めてAlign Photosを実行し、プロジェクトを保存します。COLMAPとXMLは、同じチャンク・同じアラインメントから続けて書き出します。その間に再アラインメントやカメラの最適化を行わないでください。両形式に同じ全アライン済みカメラを含めます。
+
+### 2. COLMAP形式と対応画像を書き出す
+
+File → Export → Export Cameras（ファイル → エクスポート → カメラをエクスポート）でColmap形式を選び、新しい出力先を指定します。以下は通常の単眼写真・ローカル座標のワークフロー用の推奨設定です。項目の表示名や有効状態はMetashapeのバージョンによって異なります。
+
+| 画面の項目 | 推奨設定 | 理由 |
+| --- | --- | --- |
+| 座標系 | Local Coordinates (m) | 地理・投影座標を使わないローカル処理 |
+| イメージ | ON | カメラ情報と対応する歪み補正画像を同時に出力 |
+| マスク | OFF | Scale Bridgeでは使用しない |
+| タイポイント | OFFで可 | 新しい打点をカメラ情報から三角測量するため、既存点群は不要 |
+| 基準点 | OFF | このワークフローでは使用しない |
+| ピンホールカメラモデルへの変換 | ON | 歪み補正画像とピンホールのカメラ情報を使用 |
+| 初期キャリブレーションに変換 | OFF | 初期キャリブレーションへの追加変換を行わない |
+| バイナリエンコーディング | OFF | 内容を確認しやすいテキスト形式 |
+| 選択したカメラのみをエクスポート | OFF | 全アライン済みカメラを含める |
+
+**定型イメージ名は、XMLのカメララベルと一致する名前になるように設定してください。** 現在のScale Bridgeは、COLMAPの画像名のファイル名部分とXMLのカメララベルのファイル名部分を、拡張子・大文字小文字も含めて完全一致で照合します。`{filename}_{filenum}.jpg` のようなテンプレートは、連番の追加によってXMLと名前が異なる可能性があります。既定値だからそのまま使えるとは限りません。写真名には空白・タブを含めず、各写真のファイル名を一意にしてください。
+
+出力後、`images.txt` の画像名とXMLの対応する `<camera label="...">` を確認します。例えばXMLが `IMG_0001.JPG` なら、COLMAP側のファイル名も `IMG_0001.JPG` である必要があります。名前が違う場合は、テンプレートを調整してCOLMAPを再出力します。元写真がJPEG以外、ラベルが独自名、複数フォルダに同名写真がある場合などは、この一致条件を特に確認してください。現行版には名前の自動変換・対応表の入力機能はありません。
+
+生成された `cameras.txt` と `images.txt` の入ったフォルダをScale Bridgeのモデル入力に指定します。場所は出力構成によって異なるため、必ずしも `sparse/0` 固定ではありません。`points3D.txt` はなくても読み込めます。バイナリ形式を使う場合は `points3D.bin` も含む完全なモデルが必要です。
+
+**打点には、今回COLMAPと一緒に書き出した歪み補正画像を使ってください。元写真を代わりに指定しないでください。** 画像フォルダは全画像のままでも、スケールの打点に使う画像だけをコピーしたものでも構いません。コピー時は `images.txt` に記録されたファイル名・相対パスを保持します。書き出した画像には追加のリサイズ・切り抜き・回転を行いません。
+
+### 3. AgisoftカメラXMLを書き出す
+
+同じチャンクで、再びFile → Export → Export Camerasを開き、**Agisoft XML形式**で、例えば `original_cameras.xml` に保存します。カメラキャリブレーション画面から保存するセンサー単体のXMLではなく、カメラ配置を含むExport CamerasのXMLが必要です。
+
+全アライン済みカメラを含め、COLMAPとカメラ集合を一致させます。XMLには元写真用の調整済みキャリブレーションとカメラ配置を保持します。COLMAP用のピンホール画像に合わせて元のセンサーキャリブレーションを変更する操作は不要です。現行版のXML変換は単一チャンク・参照座標なし・単眼カメラが対象で、リグ・複数component・マーカー／ground controlを含むXMLなどは対象外です。
+
+このXMLをScale Bridgeの元XML入力に指定します。Metashapeへ戻さずCOLMAPだけを縮尺補正する場合、XMLは不要です。Metashapeへ戻す際には、歪み補正画像ではなく元のMetashape写真を使います。
+
+設定の参考：[Agisoft ExportCamerasパラメータ仕様](https://download.agisoft.com/metashape-java-api/latest/com/agisoft/metashape/tasks/ExportCameras.html)。この手順は現行コードの入力条件に合わせたもので、Metashape Standard実機での往復検証は未完了です。
+
 ## 入力と操作
 
 ### 用意する画像・カメラデータの範囲
