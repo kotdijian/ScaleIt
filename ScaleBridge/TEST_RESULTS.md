@@ -1,5 +1,15 @@
 # 検証記録
 
+## 2026-10-09: Metashape単一component XMLの出力修正
+
+`QT_QPA_PLATFORM=offscreen python -m pytest -q`: **43 passed**（Linux / Python 3.12）。
+
+単一componentのカメラ参照、chunk・component双方のregion、カメラ位置共分散の倍率2乗補正、rotationとセンサー設定の保持を検証。拡張子なしのXMLラベル、Metashapeの末尾数値付きCOLMAPファイル名の一意な対応に対応し、複数候補・誤った名前対応・複数component・component固有のtransform・不正参照は拒否することを確認。
+
+利用者提供の実XML（242台、単一component、4センサー、文書version 1.2.0）も、XMLのカメラに既知の相似変換を適用して作った合成COLMAPで出力検証。242台すべての位置・回転、位置共分散、両region、全センサー情報を確認。カメラ配置の相対RMSは約1.74e-15。これは構造・変換の検証であり、実測スケールの精度評価ではありません。利用者の実COLMAP、Windows実行、MetashapeでのImport Camerasとメッシュ再生成後の実寸は未検証です。
+
+元の実XMLはリポジトリへ追加していません。
+
 ## 2026-10-09: Mac M3でのGUI起動と環境復旧
 
 利用者による実機確認: Apple M3 MacBook Air / arm64 / macOS 27.0 / Homebrew Python 3.12.15 / PySide6・Qt 6.12.0。仮想環境は `~/venvs/scalebridge`。

@@ -129,7 +129,7 @@ cameraのtransformは、内部チャンク座標へのcamera-to-worldの4×4剛�
 
 Metashapeの現行frameモデルではfはピクセル、cx/cyは画像中心からのオフセット、b1/b2はaffinity/skewです。COLMAPのcx/cyは左上基準であり、同名タグを単純にコピーできません。Metashapeのp1/p2の並びも一般的なOpenCVモデルとの読み替えを要するため、**元XMLのsensors（initial/adjustedを含む）をそのまま保持**します。COLMAPを直接Metashapeキャリブレーションに変換する機能はこの版にはありません。
 
-XML内部中心XとCOLMAP中心Yの対応は同名画像を使い、Umeyamaの相似変換
+XML内部中心XとCOLMAP中心Yの対応は、ファイル名完全一致、拡張子を除いた名前、Metashapeの末尾 `_数字` の順に一意の画像を照合し、Umeyamaの相似変換
 
 \[
 \mathbf{Y}_i\approx kQ\mathbf{X}_i+\mathbf{b}
@@ -137,9 +137,9 @@ XML内部中心XとCOLMAP中心Yの対応は同名画像を使い、Umeyamaの�
 
 を推定します。最低3つの非共線中心を必要とします。回転は反射を許さず、カメラ中心配置の正規化RMSが1e-4を超えれば拒否します。XMLカメラの回転もQを介してCOLMAPと照合し、最大角度差0.1°を超えれば拒否します。これらは書き出しの一致判定値で、測定精度の保証ではありません。
 
-XML camera translationをks倍にし、rotationは不変とします。chunk rotationは保持しますが、chunk translationを0、chunk scaleを1にリセットし、二重の縮尺適用を避けます。存在するregion center/sizeもks倍にします。camera referenceは無効化します。出力座標はmです。元XMLの移動量・参照位置の保持は目的に含めません。
+XML camera translationをks倍にし、rotationは不変とします。chunk rotationは保持しますが、chunk translationを0、chunk scaleを1にリセットし、二重の縮尺適用を避けます。存在するchunkと単一componentのregion center/sizeもks倍にします。camera location_covarianceは(ks)²倍にし、rotation_covarianceは保持します。camera referenceは無効化します。出力座標はmです。元XMLの移動量・参照位置の保持は目的に含めません。
 
-局所モデル以外のCRS、marker、ground control、rig/component等の未対応構造は拒否します。未対応XMLを推測で変換しません。全aligned cameraの対応、adjusted calibrationの存在、4×4剛体行列も確認します。実機での読み込み・生成・距離検証は残っています。
+単一componentで、全aligned cameraがそのcomponentを参照し、component固有のtransformがない構造に対応します。componentのpartitionとcamera_idsは保持します。複数component、独立したcomponent transform、局所モデル以外のCRS、marker、ground control、rig等の未対応構造は拒否します。未対応XMLを推測で変換しません。全aligned cameraの一対一対応、adjusted calibrationの存在、4×4剛体行列も確認します。実機での読み込み・生成・距離検証は残っています。
 
 ## 7. 検証の範囲
 
@@ -149,7 +149,7 @@ GUIテスト: offscreen Qtでの起動、実際のマウスクリックによる
 
 2026-10-09、利用者のApple M3 MacBook AirでPython 3.12.15・PySide6/Qt 6.12.0によるインストールとGUI起動を確認しました。環境とプラグイン探索の経過は[検証記録](TEST_RESULTS.md)を参照してください。
 
-未検証: 実際のMetashape Export Cameras XML、StandardへのImport Cameras、depth map/mesh生成後の実寸、Apple Siliconでの全テスト・実写真での精度。v0.1はこれらを確かめるための初期実装です。
+実際のMetashape Export Cameras XML（242台・単一component・4センサー）の構造保持と縮尺変換は、XMLから合成した既知相似変換のCOLMAPカメラを使って確認しました。利用者の実COLMAPとの照合、StandardへのImport Cameras、depth map/mesh生成後の実寸、Apple Siliconでの全テスト・実写真での精度は未検証です。v0.1はこれらを確かめるための初期実装です。
 
 ## 8. 一次資料
 

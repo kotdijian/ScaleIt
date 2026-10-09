@@ -189,3 +189,81 @@ def test_xml_orientation_mismatch_and_whitespace_name(tmp_path):
     with pytest.raises(ValueError,match='orientations'):export_metashape(model,xml,tmp_path/'out.xml',.1)
     p=model.folder/'images.txt'; p.write_text(p.read_text().replace('image_1.png','image one.png'))
     with pytest.raises(ValueError,match='whitespace'):Model(model.folder)
+
+
+def component_xml(path,model):
+    import copy
+    make_xml(path,model)
+    tree=ET.parse(path); chunk=tree.find('chunk')
+    container=ET.SubElement(chunk,'components',next_id='1',active_id='0')
+    component=ET.SubElement(container,'component',id='0',label='Component 1')
+    component.append(copy.deepcopy(chunk.find('region')))
+    partition=ET.SubElement(ET.SubElement(component,'partition'),'partition')
+    ET.SubElement(partition,'camera_ids').text='0 1 2 3'
+    for camera in chunk.findall('./cameras/camera'):
+        camera.set('component_id','0')
+        camera.set('label',Path(camera.get('label')).stem)
+        ET.SubElement(camera,'location_covariance').text='1 0 0 0 2 0 0 0 3'
+        ET.SubElement(camera,'rotation_covariance').text='4 0 0 0 5 0 0 0 6'
+    tree.write(path)
+    return tree
+
+
+def test_single_component_stem_names_regions_and_covariances(tmp_path):
+    model=fixture_model(tmp_path/'model'); xml=tmp_path/'original.xml'
+    before=component_xml(xml,model)
+    out=tmp_path/'scaled.xml'; report=export_metashape(model,xml,out,.1)
+    assert report['xml_component_id']=='0'
+    assert report['camera_name_matching']=={'exact':0,'stem':4,'numeric_suffix':0}
+    assert report['xml_internal_multiplier']==pytest.approx(.2)
+    after=ET.parse(out)
+    for xpath in ['./chunk/region','./chunk/components/component/region']:
+        for tag in ['center','size']:
+            a=np.fromstring(before.find(xpath+'/'+tag).text,sep=' ')
+            b=np.fromstring(after.find(xpath+'/'+tag).text,sep=' ')
+            np.testing.assert_allclose(b,a*.2)
+    def sensor_values(tree):
+        return [(e.tag,e.attrib,(e.text or '').strip()) for e in tree.find('./chunk/sensors').iter()]
+    assert sensor_values(before)==sensor_values(after)
+    assert after.find('./chunk/components/component/partition/partition/camera_ids').text=='0 1 2 3'
+    for c in after.findall('./chunk/cameras/camera'):
+        assert c.get('component_id')=='0'
+        np.testing.assert_allclose(np.fromstring(c.find('location_covariance').text,sep=' '),np.diag([1,2,3]).ravel()*.04)
+        np.testing.assert_allclose(np.fromstring(c.find('rotation_covariance').text,sep=' '),np.diag([4,5,6]).ravel())
+
+
+def test_component_numeric_suffix_and_wrong_mapping_rejection(tmp_path):
+    model=fixture_model(tmp_path/'model'); xml=tmp_path/'original.xml'; component_xml(xml,model)
+    source=(model.folder/'images.txt').read_text()
+    for i in range(1,5): source=source.replace(f'image_{i}.png',f'image_{i}_{i+24}.jpg')
+    (model.folder/'images.txt').write_text(source); model=Model(model.folder)
+    report=export_metashape(model,xml,tmp_path/'scaled.xml',.1)
+    assert report['camera_name_matching']['numeric_suffix']==4
+    # Even a unique name match must still pass whole-layout and orientation checks.
+    tree=ET.parse(xml); cams=tree.findall('./chunk/cameras/camera')
+    label=cams[0].get('label'); cams[0].set('label',cams[1].get('label')); cams[1].set('label',label)
+    tree.write(xml)
+    with pytest.raises(ValueError,match='disagree'):export_metashape(model,xml,tmp_path/'wrong.xml',.1)
+    assert not (tmp_path/'wrong.xml').exists()
+
+
+@pytest.mark.parametrize('problem',['multiple','transform','wrong_reference','missing_reference','active'])
+def test_unsupported_components_are_rejected(tmp_path,problem):
+    model=fixture_model(tmp_path/'model'); xml=tmp_path/'x.xml'; tree=component_xml(xml,model)
+    container=tree.find('./chunk/components'); component=container.find('component')
+    camera=tree.find('./chunk/cameras/camera')
+    if problem=='multiple': ET.SubElement(container,'component',id='1')
+    elif problem=='transform': ET.SubElement(component,'transform').text='1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1'
+    elif problem=='wrong_reference': camera.set('component_id','1')
+    elif problem=='missing_reference': del camera.attrib['component_id']
+    else: container.set('active_id','1')
+    tree.write(xml)
+    with pytest.raises(ValueError,match='[Cc]omponent'):export_metashape(model,xml,tmp_path/'out.xml',.1)
+    assert not (tmp_path/'out.xml').exists()
+
+
+def test_ambiguous_stem_names_rejected(tmp_path):
+    model=fixture_model(tmp_path/'model'); xml=tmp_path/'x.xml'; component_xml(xml,model)
+    source=(model.folder/'images.txt').read_text().replace('image_2.png','image_1.jpg')
+    (model.folder/'images.txt').write_text(source); model=Model(model.folder)
+    with pytest.raises(ValueError,match='ambiguous'):export_metashape(model,xml,tmp_path/'out.xml',.1)

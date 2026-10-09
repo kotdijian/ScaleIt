@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+import re
 from pathlib import Path
 from dataclasses import dataclass
 import xml.etree.ElementTree as ET
@@ -246,6 +247,61 @@ def _numbers(text, count):
     return values
 
 
+def _xml_component(chunk):
+    """Accept one shared camera coordinate system, not disconnected components."""
+    frames=chunk.find('frames')
+    if frames is not None and len(frames):
+        raise ValueError('Frame/rig XML is not supported.')
+    container=chunk.find('components')
+    components=container.findall('component') if container is not None else []
+    if len(components)>1:
+        raise ValueError('Multiple components are not supported; export one aligned component.')
+    if not components: return None
+    component=components[0]; component_id=component.get('id')
+    if component_id is None:
+        raise ValueError('XML component is missing its id.')
+    if container.get('active_id') not in (None,component_id):
+        raise ValueError('XML active component does not match the single component.')
+    # A separate component transform would require a different coordinate conversion.
+    if component.find('transform') is not None:
+        raise ValueError('Component-specific transforms are not supported.')
+    return component
+
+
+def _xml_camera_names(model,cameras):
+    """Resolve exact names first, then unique stems / Metashape numeric suffixes.
+
+    No order/id guessing or case folding. The full pose constellation and camera
+    rotations must still agree with COLMAP before any output is written.
+    """
+    def basename(name): return Path(name.replace('\\','/')).name
+    def stem(name):
+        p=Path(name)
+        return p.stem if p.suffix.lower() in ('.jpg','.jpeg','.png','.tif','.tiff','.bmp','.exr') else name
+    names={}
+    for name in model.images:
+        base=basename(name)
+        if base in names: raise ValueError('Duplicate image basenames; XML correspondence is ambiguous.')
+        names[base]=name
+    labels=[basename(c.get('label','')) for c in cameras]
+    if any(not label for label in labels) or len(set(labels))!=len(labels):
+        raise ValueError('XML camera labels are empty or duplicated.')
+    mapping={label:names[label] for label in labels if label in names}
+    modes={label:'exact' for label in mapping}; used=set(mapping.values())
+    for label in labels:
+        if label in mapping: continue
+        wanted=stem(label)
+        matches=[name for base,name in names.items() if stem(base)==wanted]
+        mode='stem'
+        if not matches:
+            matches=[name for base,name in names.items() if re.fullmatch(re.escape(wanted)+r'_\d+',stem(base))]
+            mode='numeric_suffix'
+        if len(matches)!=1 or matches[0] in used:
+            raise ValueError(f'XML/COLMAP name mismatch or ambiguous mapping: {label}')
+        mapping[label]=matches[0]; modes[label]=mode; used.add(matches[0])
+    return mapping,modes
+
+
 def export_metashape(model, xml_path, output, meters_per_unit):
     """Patch original unreferenced single-chunk XML; preserve sensor calibration.
 
@@ -266,19 +322,14 @@ def export_metashape(model, xml_path, output, meters_per_unit):
     if len(chunks)!=1:
         raise ValueError('Only single-chunk Export Cameras XML is supported.')
     chunk=chunks[0]
-    if chunk.find('components') is not None or chunk.find('frames') is not None:
-        raise ValueError('Component/rig XML is not supported in v0.1.')
+    component=_xml_component(chunk)
     if chunk.find('markers') is not None or chunk.find('ground_control') is not None:
         raise ValueError('Referenced/marker XML is outside the local-scale workflow.')
     crs=chunk.find('reference')
     if crs is not None and crs.text and crs.text.strip() and 'LOCAL_CS' not in crs.text:
         raise ValueError('Geographic/projected CRS XML is not supported.')
-    lookup={}
-    for name in model.images:
-        base=Path(name.replace('\\','/')).name
-        if base in lookup:
-            raise ValueError('Duplicate image basenames; XML correspondence is ambiguous.')
-        lookup[base]=name
+    aligned=[c for c in chunk.findall('./cameras//camera') if c.find('transform') is not None]
+    lookup,name_modes=_xml_camera_names(model,aligned)
     if any(s.get('master_id') is not None for s in chunk.findall('./sensors/sensor')):
         raise ValueError('Multi-camera sensor XML is unsupported in v0.1.')
     cams=[]; X=[]; Y=[]; names=set()
@@ -286,8 +337,13 @@ def export_metashape(model, xml_path, output, meters_per_unit):
         tr=camera.find('transform')
         if tr is None:
             continue
-        if camera.get('master_id') is not None or camera.get('component_id') is not None:
-            raise ValueError('Rig/component cameras are not supported in XML export.')
+        if camera.get('master_id') is not None:
+            raise ValueError('Rig cameras are not supported in XML export.')
+        component_id=camera.get('component_id')
+        if component_id is not None and (component is None or component_id!=component.get('id')):
+            raise ValueError('Camera refers to a missing or different XML component.')
+        if component is not None and component_id!=component.get('id'):
+            raise ValueError('Every aligned camera must belong to the single XML component.')
         label=Path(camera.get('label','').replace('\\','/')).name
         if label not in lookup or label in names:
             raise ValueError(f'XML/COLMAP name mismatch or duplicate: {label}')
@@ -328,6 +384,9 @@ def export_metashape(model, xml_path, output, meters_per_unit):
     for camera,tr,matrix in cams:
         matrix[:3,3]*=factor
         tr.text=' '.join(f'{v:.17g}' for v in matrix.flat)
+        covariance=camera.find('location_covariance')
+        if covariance is not None:
+            covariance.text=' '.join(f'{v:.17g}' for v in _numbers(covariance.text,9)*factor**2)
         for reference in camera.findall('reference'):
             reference.set('enabled','false')
     global_tr=chunk.find('transform')
@@ -347,8 +406,9 @@ def export_metashape(model, xml_path, output, meters_per_unit):
         e=global_tr.find(tag)
         if e is None: e=ET.SubElement(global_tr,tag)
         e.text=text
-    region=chunk.find('region')
-    if region is not None:
+    regions=chunk.findall('region')
+    if component is not None: regions.extend(component.findall('region'))
+    for region in regions:
         for tag in ('center','size'):
             e=region.find(tag)
             if e is not None: e.text=' '.join(f'{v:.17g}' for v in _numbers(e.text,3)*factor)
@@ -356,6 +416,8 @@ def export_metashape(model, xml_path, output, meters_per_unit):
     output.parent.mkdir(parents=True,exist_ok=True)
     tree.write(output,encoding='utf-8',xml_declaration=True)
     return {'unit':'m','xml_internal_multiplier':factor,'colmap_per_xml_unit':k,
+            'xml_component_id':component.get('id') if component is not None else None,
+            'camera_name_matching':{mode:sum(m==mode for m in name_modes.values()) for mode in ('exact','stem','numeric_suffix')},
             'camera_layout_relative_rms':relative,'matched_cameras':len(cams),'max_orientation_error_deg':max(orientation_errors),
             'metashape_import_validation':'pending: must verify in installed Standard edition'}
 
