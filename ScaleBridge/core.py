@@ -116,7 +116,15 @@ class Model:
         return np.asarray(xy)
 
 
-def triangulate(model, observations, min_angle_deg=1.0, max_error_px=2.0):
+class CalculationError(ValueError):
+    """Failed scale calculation retaining per-marker diagnostics for the GUI."""
+    def __init__(self, points, failures):
+        self.points = points
+        self.failures = failures
+        super().__init__('\n'.join(f'{p}: {reason}' for p,reason in failures.items()))
+
+
+def triangulate(model, observations, min_angle_deg=1.0, max_error_px=2.0, *, check_error=True):
     """Observations: image name -> [x,y], one per image for one physical point."""
     if len(observations) < 2:
         raise ValueError('Each point needs observations from at least two images.')
@@ -152,7 +160,7 @@ def triangulate(model, observations, min_angle_deg=1.0, max_error_px=2.0):
         raise ValueError('Triangulation refinement did not converge.')
     errors = {n: float(np.linalg.norm(model.project(n,fit.x)-xy))
               for n,xy in observations.items()}
-    if max(errors.values()) > max_error_px:
+    if check_error and max(errors.values()) > max_error_px:
         raise ValueError('Reprojection error exceeds threshold: '+
                          ', '.join(f'{n}: {e:.2f}px' for n,e in errors.items()))
     warnings = ['Only two views: add a third for redundancy.'] if len(observations)==2 else []
@@ -165,9 +173,24 @@ def solve(model, observations, bars, min_angle_deg=1.0, max_error_px=2.0):
     """bars=[{a,b,length_m,role:'scale'|'check',weight:1}]."""
     if not bars or not any(b.get('role','scale')=='scale' for b in bars):
         raise ValueError('At least one scale distance is required.')
+    for role,limit in [('scale',3),('check',2)]:
+        if sum(b.get('role','scale')==role for b in bars)>limit:
+            raise ValueError(f'Maximum {limit} {role} distances are supported.')
     needed = {b[k] for b in bars for k in ('a','b')}
-    points = {p:triangulate(model,observations.get(p,{}),min_angle_deg,max_error_px)
-              for p in sorted(needed)}
+    points = {}; failures = {}
+    # Inspect every marker, even when one fails; no scale is accepted on failure.
+    for p in sorted(needed | set(observations)):
+        try:
+            points[p] = triangulate(model,observations.get(p,{}),min_angle_deg,
+                                    max_error_px,check_error=False)
+            exceeded = {n:e for n,e in points[p]['errors_px'].items() if e>max_error_px}
+            if exceeded:
+                failures[p] = 'Reprojection error exceeds threshold: '+', '.join(
+                    f'{n}: {e:.2f}px' for n,e in exceeded.items())
+        except ValueError as e:
+            failures[p] = str(e)
+    if failures:
+        raise CalculationError(points,failures)
     measurements=[]
     for b in bars:
         if b['a']==b['b'] or b.get('role','scale') not in ('scale','check'):

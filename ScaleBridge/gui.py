@@ -4,13 +4,13 @@ import sys
 from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImageReader, QPixmap, QColor, QPen, QPainter
+from PySide6.QtGui import QImageReader, QPixmap, QColor, QPen, QPainter, QCursor
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QPushButton, QLabel, QLineEdit, QComboBox, QDoubleSpinBox,
     QFileDialog, QMessageBox, QGraphicsView, QGraphicsScene, QGraphicsItem,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QPlainTextEdit,
     QFormLayout, QGroupBox)
-from core import Model, solve, export_colmap, export_metashape, write_json, VERSION
+from core import Model, solve, CalculationError, export_colmap, export_metashape, write_json, VERSION
 
 
 class PhotoView(QGraphicsView):
@@ -20,7 +20,15 @@ class PhotoView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
-        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        target=QPixmap(33,33); target.fill(Qt.GlobalColor.transparent)
+        painter=QPainter(target); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # White outline keeps the target visible against both dark and light photos.
+        for color,width in [('white',3),('black',1)]:
+            painter.setPen(QPen(QColor(color),width))
+            painter.drawEllipse(6,6,20,20)
+            painter.drawLine(2,16,30,16); painter.drawLine(16,2,16,30)
+        painter.end()
+        self.viewport().setCursor(QCursor(target,16,16))
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.pix=None; self.marks=[]; self.start=None
         self.pan_last=None; self.panning=False
@@ -65,7 +73,7 @@ class PhotoView(QGraphicsView):
     def mouseReleaseEvent(self,event):
         if self.pix and self.start is not None and event.button()==Qt.MouseButton.LeftButton:
             if not self.panning and (event.position()-self.start).manhattanLength()<4:
-                # Event position is the arrow cursor hotspot (tip), mapped to image coordinates.
+                # Event position is the target center hotspot, mapped to image coordinates.
                 xy=self.viewportTransform().inverted()[0].map(event.position())
                 if self.pix.boundingRect().contains(xy): self.clicked.emit(xy.x(),xy.y())
         self.start=None; self.pan_last=None; self.panning=False
@@ -74,7 +82,7 @@ class PhotoView(QGraphicsView):
         for item in self.marks: self.scene().removeItem(item)
         self.marks=[]
         for i,(name,xy) in enumerate(points.items()):
-            color=QColor(['#ffcc00','#00ddff','#ff77aa','#77ff88'][i%4])
+            color=QColor(['#ffcc00','#00ddff','#ff77aa','#77ff88','#c899ff'][i%5])
             # Ignore zoom transform for a readable crosshair and label.
             cross=self.scene().addText('＋'); cross.setDefaultTextColor(color)
             cross.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
@@ -97,6 +105,7 @@ class Window(QMainWindow):
         self.setWindowTitle(f'Scale Bridge {VERSION} — 写真から実寸スケールを設定')
         self.resize(1350,950)
         self.model=None; self.observations={}; self.result=None
+        self.diagnostics={}; self.diagnostic_failures={}
         self.current_name=None; self.image_valid=False
         root=QWidget(); self.setCentralWidget(root); layout=QVBoxLayout(root)
         self.paths={}
@@ -128,16 +137,16 @@ class Window(QMainWindow):
         self.photo_status=QLabel('未読み込み'); ll.addWidget(self.photo_status); splitter.addWidget(left)
         right=QWidget(); rl=QVBoxLayout(right); splitter.addWidget(right); splitter.setSizes([850,450])
         row=QHBoxLayout(); row.addWidget(QLabel('打点する点名'))
-        self.point=QComboBox(); self.point.setEditable(True); self.point.addItems(['A','B','C','D'])
+        self.point=QComboBox(); self.point.addItems(['A','B','C','D','E'])
         row.addWidget(self.point); rl.addLayout(row)
-        self.obs_table=QTableWidget(0,4); self.obs_table.setHorizontalHeaderLabels(['点','写真','x','y'])
+        self.obs_table=QTableWidget(0,5); self.obs_table.setHorizontalHeaderLabels(['点','写真','x','y','再投影誤差 px'])
         self.obs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.obs_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.obs_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.obs_table.setMaximumHeight(180)
         rl.addWidget(self.obs_table)
         self.button(rl,'選択した打点を削除',self.delete_observation)
-        rl.addWidget(QLabel('距離入力（mm）: scale=縮尺決定 / check=検証のみ'))
+        rl.addWidget(QLabel('距離入力（mm）: scale 最大3区間 / check 最大2区間'))
         self.bars=QTableWidget(0,4); self.bars.setHorizontalHeaderLabels(['始点','終点','実寸 mm','用途'])
         self.bars.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.bars.setMaximumHeight(140)
@@ -165,6 +174,9 @@ class Window(QMainWindow):
         if p: self.paths[key].setText(p)
     def invalidate(self,*args):
         self.result=None
+        self.diagnostics={}; self.diagnostic_failures={}
+        if hasattr(self,'obs_table'): self.refresh_observations()
+        if hasattr(self,'photo'): self.refresh_markers()
         if hasattr(self,'report'): self.report.setPlainText('入力が変更されました。縮尺を計算してください。')
     def invalidate_source(self,*args):
         self.model=None; self.image_valid=False; self.current_name=None
@@ -213,9 +225,9 @@ class Window(QMainWindow):
         if not self.current_name: return
         points={p:obs[self.current_name] for p,obs in self.observations.items() if self.current_name in obs}
         predictions={}
-        if self.result:
+        if self.diagnostics:
             for p in points:
-                if p in self.result['points']: predictions[p]=self.model.project(self.current_name,np.array(self.result['points'][p]['xyz']))
+                if p in self.diagnostics: predictions[p]=self.model.project(self.current_name,np.array(self.diagnostics[p]['xyz']))
         self.photo.markers(points,predictions)
     def add_observation(self,x,y):
         if not self.model or not self.image_valid: return
@@ -229,15 +241,24 @@ class Window(QMainWindow):
             for n,xy in sorted(obs.items()): self.obs_rows.append((p,n,xy))
         self.obs_table.setRowCount(len(self.obs_rows))
         for r,(p,n,xy) in enumerate(self.obs_rows):
-            for c,v in enumerate([p,n,f'{xy[0]:.3f}',f'{xy[1]:.3f}']): self.obs_table.setItem(r,c,QTableWidgetItem(v))
+            error=self.diagnostics.get(p,{}).get('errors_px',{}).get(n)
+            status=f'{error:.3f}' if error is not None else ('計算不可' if p in self.diagnostic_failures else '—')
+            for c,v in enumerate([p,n,f'{xy[0]:.3f}',f'{xy[1]:.3f}',status]): self.obs_table.setItem(r,c,QTableWidgetItem(v))
+            item=self.obs_table.item(r,4)
+            if error is not None and error>self.error.value():
+                item.setForeground(QColor('#cc2222')); item.setText(status+' 超過')
+            if p in self.diagnostic_failures: item.setToolTip(self.diagnostic_failures[p])
     def delete_observation(self):
         rows=sorted({i.row() for i in self.obs_table.selectedIndexes()},reverse=True)
         for r in rows:
             p,n,_=self.obs_rows[r]; del self.observations[p][n]
+            if not self.observations[p]: del self.observations[p]
         self.invalidate(); self.refresh_observations(); self.refresh_markers()
     def add_bar(self):
+        if self.bars.rowCount()>=5: raise ValueError('距離入力はscale最大3区間、check最大2区間、合計5区間です。')
         r=self.bars.rowCount(); self.bars.insertRow(r)
-        for c,v in enumerate(['A','B','100','scale']): self.bars.setItem(r,c,QTableWidgetItem(v))
+        scale_count=sum(self.bars.item(i,3) is not None and self.bars.item(i,3).text().strip()=='scale' for i in range(r))
+        for c,v in enumerate(['A','B','100','scale' if scale_count<3 else 'check']): self.bars.setItem(r,c,QTableWidgetItem(v))
         self.invalidate()
     def delete_bar(self):
         rows=sorted({i.row() for i in self.bars.selectedIndexes()},reverse=True)
@@ -247,13 +268,24 @@ class Window(QMainWindow):
         result=[]
         for r in range(self.bars.rowCount()):
             vals=[self.bars.item(r,c).text().strip() if self.bars.item(r,c) else '' for c in range(4)]
+            if vals[0] not in 'ABCDE' or vals[1] not in 'ABCDE' or len(vals[0])!=1 or len(vals[1])!=1:
+                raise ValueError('距離の始点・終点にはA〜Eを指定してください。')
             result.append({'a':vals[0],'b':vals[1],'length_m':float(vals[2])/1000,'role':vals[3]})
         return result
     def calculate(self):
         if not self.model: raise ValueError('COLMAPと画像を読み込んでください。')
         # Do not retain an earlier successful result after a failed recomputation.
         self.result=None
-        self.result=solve(self.model,self.observations,self.distances(),self.angle.value(),self.error.value())
+        self.diagnostics={}; self.diagnostic_failures={}
+        try:
+            self.result=solve(self.model,self.observations,self.distances(),self.angle.value(),self.error.value())
+        except CalculationError as e:
+            self.diagnostics=e.points; self.diagnostic_failures=e.failures
+            self.report.setPlainText('縮尺は確定していません。打点一覧の再投影誤差を確認してください。\n'+str(e))
+            raise
+        finally:
+            if self.result: self.diagnostics=self.result['points']
+            self.refresh_observations(); self.refresh_markers()
         r=self.result; lines=[f"縮尺: {r['meters_per_model_unit']:.12g} m / モデル単位"]
         for p,v in r['points'].items():
             lines.append(f"{p}: {len(v['errors_px'])}枚 / RMS {v['rms_px']:.3f}px / 最大交会角 {v['max_intersection_angle_deg']:.2f}°")

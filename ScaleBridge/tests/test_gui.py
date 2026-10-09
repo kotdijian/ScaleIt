@@ -101,7 +101,7 @@ def test_failed_image_read_clears_old_photo(tmp_path):
     w.close()
 
 
-def test_arrow_tip_coordinates_and_drag(tmp_path):
+def test_target_center_coordinates_and_drag(tmp_path):
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QMouseEvent
     app=QApplication.instance() or QApplication([])
@@ -111,10 +111,11 @@ def test_arrow_tip_coordinates_and_drag(tmp_path):
     view.scale(4,4)
     point=view.mapFromScene(QPointF(640,480))
     expected=view.mapToScene(point)
-    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    assert view.viewport().cursor().hotSpot().x()==16
+    assert view.viewport().cursor().hotSpot().y()==16
     QTest.mouseClick(view.viewport(),Qt.MouseButton.LeftButton,pos=point)
     np.testing.assert_allclose(w.observations['A'][w.current_name],[expected.x(),expected.y()],atol=1e-9)
-    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    assert view.viewport().cursor().shape()==Qt.CursorShape.BitmapCursor
     fractional=QPointF(point)+QPointF(.25,.75)
     for kind,button_state in [(QEvent.Type.MouseButtonPress,Qt.MouseButton.LeftButton),
                               (QEvent.Type.MouseButtonRelease,Qt.MouseButton.NoButton)]:
@@ -130,8 +131,62 @@ def test_arrow_tip_coordinates_and_drag(tmp_path):
         Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
     QApplication.sendEvent(view.viewport(),event)
     assert view.panning and view.horizontalScrollBar().value()!=x0
-    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    assert view.viewport().cursor().shape()==Qt.CursorShape.BitmapCursor
     QTest.mouseRelease(view.viewport(),Qt.MouseButton.LeftButton,pos=end.toPoint())
     assert not w.observations
-    assert view.viewport().cursor().shape()==Qt.CursorShape.ArrowCursor
+    assert view.viewport().cursor().shape()==Qt.CursorShape.BitmapCursor
+    w.close()
+
+
+def test_five_markers_and_distance_limits(tmp_path):
+    import pytest
+    app=QApplication.instance() or QApplication([])
+    w=Window()
+    assert [w.point.itemText(i) for i in range(w.point.count())]==list('ABCDE')
+    for _ in range(4): w.add_bar()
+    assert [w.bars.item(i,3).text() for i in range(5)]==['scale']*3+['check']*2
+    with pytest.raises(ValueError,match='合計5'): w.add_bar()
+    data=create_demo(tmp_path/'demo')
+    for k,v in data['paths'].items(): w.paths[k].setText(v)
+    w.load()
+    positions={'A':[0,0,5],'B':[1,0,5],'C':[0,1,5],'D':[1,1,5],'E':[0,0,6]}
+    w.observations={p:{n:w.model.project(n,np.array(x)).tolist() for n in w.model.images} for p,x in positions.items()}
+    for i,(a,b) in enumerate([('A','B'),('A','C'),('A','E'),('B','D'),('C','D')]):
+        w.bars.setItem(i,0,QTableWidgetItem(a)); w.bars.setItem(i,1,QTableWidgetItem(b))
+    w.calculate()
+    assert set(w.result['points'])==set('ABCDE')
+    assert w.result['meters_per_model_unit']==pytest.approx(.1)
+    w.bars.setItem(4,3,QTableWidgetItem('scale'))
+    with pytest.raises(ValueError,match='Maximum 3'): w.calculate()
+    assert w.result is None
+    w.bars.setItem(4,3,QTableWidgetItem('check'))
+    w.bars.setItem(0,3,QTableWidgetItem('check'))
+    with pytest.raises(ValueError,match='Maximum 2'): w.calculate()
+    w.close()
+
+
+def test_reprojection_failures_show_every_marker_and_invalidate(tmp_path):
+    import pytest
+    from core import CalculationError
+    app=QApplication.instance() or QApplication([])
+    data=create_demo(tmp_path/'demo'); w=Window()
+    for k,v in data['paths'].items(): w.paths[k].setText(v)
+    w.load(); w.observations=data['observations']; w.calculate()
+    name=sorted(w.model.images)[0]
+    w.observations['A'][name][0]+=20
+    w.observations['B'][name][1]+=20
+    with pytest.raises(CalculationError) as exc: w.calculate()
+    assert 'A' in exc.value.failures and 'B' in exc.value.failures
+    assert w.result is None and set(w.diagnostics)==set(w.observations)
+    for r,(p,n,_) in enumerate(w.obs_rows):
+        text=w.obs_table.item(r,4).text()
+        assert text!='—' and text!='計算不可'
+        if p in ['A','B'] and n==name: assert '超過' in text
+    with pytest.raises(ValueError): w.require_result()
+    w.error.setValue(100)
+    assert not w.diagnostics and all(w.obs_table.item(r,4).text()=='—' for r in range(w.obs_table.rowCount()))
+    w.calculate(); assert w.result is not None
+    w.observations['C']={name:w.observations['C'][name]}
+    with pytest.raises(CalculationError): w.calculate()
+    assert any(w.obs_table.item(r,4).text()=='計算不可' for r,(p,n,_) in enumerate(w.obs_rows) if p=='C')
     w.close()
