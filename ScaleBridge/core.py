@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pycolmap
 from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
 
 VERSION = '0.1.0'
 
@@ -302,6 +303,60 @@ def _xml_camera_names(model,cameras):
     return mapping,modes
 
 
+def _xml_orientation_check(model,chunk,cams,lookup,world_rotation):
+    """Validate poses allowing a tightly bounded shared rectified sensor frame.
+
+    Metashape SIMPLE_PINHOLE exports can use a slightly tilted camera frame.
+    Estimate it only from multiple views of the same original sensor; never
+    transfer this tilt to the XML used with original photographs.
+    """
+    def angle(R):
+        return float(np.degrees(Rotation.from_matrix(R).magnitude()))
+    groups={}
+    for camera,tr,matrix in cams:
+        label=Path(camera.get('label','').replace('\\','/')).name
+        name=lookup[label]
+        delta=model.pose(name)[0]@world_rotation@matrix[:3,:3]
+        groups.setdefault(camera.get('sensor_id'),[]).append((name,delta))
+    raw_errors=[]; checked_errors=[]; adjustments=[]
+    for sensor_id,records in groups.items():
+        raw=[angle(delta) for name,delta in records]; raw_errors.extend(raw)
+        if max(raw)<=.1:
+            checked_errors.extend(raw); continue
+        U,_,Vt=np.linalg.svd(sum(delta for name,delta in records))
+        D=np.eye(3); D[-1,-1]=np.linalg.det(U@Vt)
+        shared=U@D@Vt
+        residuals=[angle(delta@shared.T) for name,delta in records]
+        vector=Rotation.from_matrix(shared).as_rotvec(degrees=True)
+        sensor=chunk.find(f"./sensors/sensor[@id='{sensor_id}']")
+        calib=sensor.find("calibration[@class='adjusted']")
+        original_f=float(calib.findtext('f','nan'))
+        output_cameras=[model.camera(name) for name,delta in records]
+        # A centered SIMPLE_PINHOLE with unchanged focal length is the supported
+        # Metashape rectification case. Lens/roll/large/per-view changes are rejected.
+        compatible=(len(records)>=3 and sensor.get('type')=='frame'
+                    and calib.get('type')=='frame' and np.isfinite(original_f) and original_f>0
+                    and len({camera.camera_id for camera in output_cameras})==1)
+        for camera in output_cameras:
+            if camera.model_name!='SIMPLE_PINHOLE': compatible=False; break
+            f,cx,cy=camera.params
+            if abs(f/original_f-1)>1e-3 or abs(cx-camera.width/2)>1e-4 or abs(cy-camera.height/2)>1e-4:
+                compatible=False; break
+        if (not compatible or angle(shared)>1 or abs(vector[2])>.01 or max(residuals)>.001):
+            name=records[int(np.argmax(raw))][0]
+            raise ValueError(f'XML/COLMAP camera orientations disagree: sensor {sensor_id}, '
+                             f'{name}: raw {max(raw):.6f} degrees, '
+                             f'sensor residual {max(residuals):.6f} degrees. '
+                             'Use the same alignment and matching export settings.')
+        checked_errors.extend(residuals)
+        adjustments.append({'sensor_id':sensor_id,'matched_cameras':len(records),
+            'rotation_original_to_colmap_camera':shared.tolist(),
+            'angle_deg':angle(shared),'max_residual_deg':max(residuals)})
+    return {'max_orientation_error_deg':max(checked_errors),
+            'max_raw_orientation_error_deg':max(raw_errors),
+            'sensor_camera_frame_adjustments':adjustments}
+
+
 def export_metashape(model, xml_path, output, meters_per_unit):
     """Patch original unreferenced single-chunk XML; preserve sensor calibration.
 
@@ -372,14 +427,7 @@ def export_metashape(model, xml_path, output, meters_per_unit):
     relative=float(np.sqrt(np.mean(errors**2))/np.sqrt(np.mean(np.sum(yc**2,axis=1))))
     if relative>1e-4:
         raise ValueError(f'XML/COLMAP camera layouts disagree ({relative:.3g}); use same alignment.')
-    orientation_errors=[]
-    for camera,tr,matrix in cams:
-        label=Path(camera.get('label','').replace('\\','/')).name
-        expected=model.pose(lookup[label])[0].T
-        delta=expected.T@(R@matrix[:3,:3])
-        orientation_errors.append(float(np.degrees(np.arccos(np.clip((np.trace(delta)-1)/2,-1,1)))))
-    if max(orientation_errors)>.1:
-        raise ValueError('XML/COLMAP camera orientations disagree; use the same alignment.')
+    orientation_report=_xml_orientation_check(model,chunk,cams,lookup,R)
     factor=k*meters_per_unit
     for camera,tr,matrix in cams:
         matrix[:3,3]*=factor
@@ -418,7 +466,7 @@ def export_metashape(model, xml_path, output, meters_per_unit):
     return {'unit':'m','xml_internal_multiplier':factor,'colmap_per_xml_unit':k,
             'xml_component_id':component.get('id') if component is not None else None,
             'camera_name_matching':{mode:sum(m==mode for m in name_modes.values()) for mode in ('exact','stem','numeric_suffix')},
-            'camera_layout_relative_rms':relative,'matched_cameras':len(cams),'max_orientation_error_deg':max(orientation_errors),
+            'camera_layout_relative_rms':relative,'matched_cameras':len(cams),**orientation_report,
             'metashape_import_validation':'pending: must verify in installed Standard edition'}
 
 

@@ -170,6 +170,21 @@ Metashapeから、補正済み画像が `root/images`、`cameras.txt`・`images.
 
 旧版の `Component/rig XML is not supported in v0.1.` は、単一componentも一律拒否していたために発生しました。この修正版ではカメラのcomponent参照を検証し、カメラ位置に加えてchunkとcomponent双方の領域（center・size）を同じ倍率で補正します。カメラ位置の共分散は倍率の2乗で補正し、カメラ回転・回転共分散・センサーキャリブレーション・componentの区分情報を保持します。元XMLを手動で編集・削除する必要はありません。
 
+#### ピンホール書き出しによるカメラの向きの差
+
+補正画像用のCOLMAPと元写真用のXMLでは、カメラ中心が一致していても、センサーごとに共通する小さなカメラ軸の回転差がある場合があります。提供された実データでは242台の中心配置が相対RMS約8.55e-16で一致し、回転差は約0.057〜0.386°でした。従来の回転差0.1°の単純比較では、このデータも拒否していました。
+
+現行版は、直接比較で0.1°を超えるセンサーについて、次の条件をすべて満たす場合だけ、センサー共通のカメラ軸調整として照合します。
+
+- 同じXMLセンサーに3台以上が属し、対応するCOLMAPは1つの中心主点の`SIMPLE_PINHOLE`カメラ設定であること。
+- COLMAPの焦点距離とXMLの調整済み`f`の相対差が0.1%以内であること。
+- 共通の回転差が1°以内、回転ベクトルの光軸方向成分が0.01°以内であること。
+- 共通回転を除いた各写真の回転残差が0.001°以内であること。
+
+これは再投影誤差の「10 px」とは別の、XML・COLMAPの対応確認です。写真ごとに不規則な回転差、異なる焦点距離、大きな回転やロール、非対応のカメラ形式などは引き続き拒否します。失敗時にはセンサーID・写真名・回転差・センサー内残差を表示します。
+
+**この調整は対応確認にだけ使い、出力XMLの回転には適用しません。** 出力XMLは元写真用のカメラ回転とキャリブレーションを保持し、位置と領域を縮尺補正します。計算記録には生の最大回転差`max_raw_orientation_error_deg`、確認後の差`max_orientation_error_deg`、認識したセンサー共通回転`sensor_camera_frame_adjustments`を記録します。実データでのXML出力は確認済みですが、Metashapeへ読み戻したメッシュの実寸確認は必要です。
+
 このXMLをScale Bridgeの元XML入力に指定します。Scale Bridgeで歪み補正画像に打点して縮尺を計算した後、このXMLを基に `scaled_cameras.xml` を出力します。オリジナル入力画像での打ち直しは不要です。Metashapeへ戻さずCOLMAPだけを縮尺補正する場合、XMLは不要です。後段のMetashapeで使用する画像は「縮尺補正後にMetashapeでメッシュを生成する」を参照してください。
 
 設定の参考：[Agisoft ExportCamerasパラメータ仕様](https://download.agisoft.com/metashape-java-api/latest/com/agisoft/metashape/tasks/ExportCameras.html)。この手順は現行コードの入力条件に合わせたもので、Metashape Standard実機での往復検証は未完了です。

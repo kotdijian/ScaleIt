@@ -135,7 +135,7 @@ XML内部中心XとCOLMAP中心Yの対応は、ファイル名完全一致、拡
 \mathbf{Y}_i\approx kQ\mathbf{X}_i+\mathbf{b}
 \]
 
-を推定します。最低3つの非共線中心を必要とします。回転は反射を許さず、カメラ中心配置の正規化RMSが1e-4を超えれば拒否します。XMLカメラの回転もQを介してCOLMAPと照合し、最大角度差0.1°を超えれば拒否します。これらは書き出しの一致判定値で、測定精度の保証ではありません。
+を推定します。最低3つの非共線中心を必要とします。回転は反射を許さず、カメラ中心配置の正規化RMSが1e-4を超えれば拒否します。XMLカメラの回転もQを介してCOLMAPと照合します。直接比較で最大角度差0.1°以内なら受理します。超える場合は、同一XMLセンサーの3台以上に共通する微小カメラ軸回転だけを検証対象とします。対応COLMAPは1つの中心主点SIMPLE_PINHOLE設定、焦点距離の相対差0.1%以内、共通回転1°以内、回転ベクトルの光軸成分0.01°以内、共通回転除去後の各写真の回転残差0.001°以内をすべて必要とします。共通回転は各差回転行列の和のSVDでSO(3)に射影して求めます。認識した回転は照合にのみ使い、元写真用XML回転を置き換えません。これらは書き出しの一致判定値で、測定精度の保証ではありません。
 
 XML camera translationをks倍にし、rotationは不変とします。chunk rotationは保持しますが、chunk translationを0、chunk scaleを1にリセットし、二重の縮尺適用を避けます。存在するchunkと単一componentのregion center/sizeもks倍にします。camera location_covarianceは(ks)²倍にし、rotation_covarianceは保持します。camera referenceは無効化します。出力座標はmです。元XMLの移動量・参照位置の保持は目的に含めません。
 
@@ -149,7 +149,7 @@ GUIテスト: offscreen Qtでの起動、実際のマウスクリックによる
 
 2026-10-09、利用者のApple M3 MacBook AirでPython 3.12.15・PySide6/Qt 6.12.0によるインストールとGUI起動を確認しました。環境とプラグイン探索の経過は[検証記録](TEST_RESULTS.md)を参照してください。
 
-実際のMetashape Export Cameras XML（242台・単一component・4センサー）の構造保持と縮尺変換は、XMLから合成した既知相似変換のCOLMAPカメラを使って確認しました。利用者の実COLMAPとの照合、StandardへのImport Cameras、depth map/mesh生成後の実寸、Apple Siliconでの全テスト・実写真での精度は未検証です。v0.1はこれらを確かめるための初期実装です。
+実際のMetashape Export Cameras XML（242台・単一component・4センサー）と提供された実COLMAPの照合・XML出力を確認しました。中心の相似変換倍率は約1、配置の相対RMS約8.55e-16。直接の回転差は約0.057〜0.386°で、0.1°を超えた3センサーではセンサー共通回転除去後の最大残差が約6.68e-14°でした。回転・センサー情報を保持した縮尺変換も検証しました。StandardへのImport Cameras、depth map/mesh生成後の実寸、Apple Siliconでの全テスト・実写真での測定精度は未検証です。v0.1はこれらを確かめるための初期実装です。
 
 ## 8. 一次資料
 

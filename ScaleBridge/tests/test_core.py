@@ -267,3 +267,49 @@ def test_ambiguous_stem_names_rejected(tmp_path):
     source=(model.folder/'images.txt').read_text().replace('image_2.png','image_1.jpg')
     (model.folder/'images.txt').write_text(source); model=Model(model.folder)
     with pytest.raises(ValueError,match='ambiguous'):export_metashape(model,xml,tmp_path/'out.xml',.1)
+
+
+def rectified_xml_fixture(tmp_path,problem=None):
+    from scipy.spatial.transform import Rotation
+    model=fixture_model(tmp_path/'model','SIMPLE_PINHOLE',[1200,800,600])
+    xml=tmp_path/'original.xml'; before=component_xml(xml,model)
+    before.find('./chunk/sensors/sensor/calibration/f').text='1200'; before.write(xml)
+    tilt=Rotation.from_rotvec(np.radians([.35,-.06,0])).as_matrix()
+    if problem=='large': tilt=Rotation.from_rotvec(np.radians([2,0,0])).as_matrix()
+    if problem=='roll': tilt=Rotation.from_rotvec(np.radians([.35,0,.1])).as_matrix()
+    lines=[]
+    for i,n in enumerate(sorted(model.images),1):
+        R=tilt@model.pose(n)[0]
+        if problem=='nonuniform' and i==1:
+            R=Rotation.from_rotvec(np.radians([.02,0,0])).as_matrix()@R
+        t=-R@model.center(n); q=Rotation.from_matrix(R).as_quat()
+        lines.extend([f'{i} {q[3]} {q[0]} {q[1]} {q[2]} {t[0]} {t[1]} {t[2]} 1 {n}',''])
+    (model.folder/'images.txt').write_text('\n'.join(lines)+'\n')
+    if problem=='focal': (model.folder/'cameras.txt').write_text('1 SIMPLE_PINHOLE 1600 1200 1300 800 600\n')
+    if problem=='principal': (model.folder/'cameras.txt').write_text('1 SIMPLE_PINHOLE 1600 1200 1200 802 600\n')
+    if problem=='lens': (model.folder/'cameras.txt').write_text('1 SIMPLE_RADIAL 1600 1200 1200 800 600 .1\n')
+    return Model(model.folder),xml,before
+
+
+def test_sensor_common_pinhole_tilt_preserves_original_image_poses(tmp_path):
+    model,xml,before=rectified_xml_fixture(tmp_path)
+    out=tmp_path/'scaled.xml'; report=export_metashape(model,xml,out,.1)
+    assert report['max_raw_orientation_error_deg']>.3
+    assert report['max_orientation_error_deg']<1e-10
+    correction=report['sensor_camera_frame_adjustments'][0]
+    assert correction['matched_cameras']==4 and correction['angle_deg']>.3
+    after=ET.parse(out)
+    for a,b in zip(before.findall('./chunk/cameras/camera'),after.findall('./chunk/cameras/camera')):
+        A=np.fromstring(a.find('transform').text,sep=' ').reshape(4,4)
+        B=np.fromstring(b.find('transform').text,sep=' ').reshape(4,4)
+        # Retain original photograph poses, never replace them with rectified poses.
+        np.testing.assert_allclose(B[:3,:3],A[:3,:3],atol=1e-15)
+        np.testing.assert_allclose(B[:3,3],A[:3,3]*.2,atol=1e-12)
+
+
+@pytest.mark.parametrize('problem',['nonuniform','large','roll','focal','principal','lens'])
+def test_pinhole_tilt_allowance_rejects_other_pose_changes(tmp_path,problem):
+    model,xml,_=rectified_xml_fixture(tmp_path,problem)
+    out=tmp_path/'scaled.xml'
+    with pytest.raises(ValueError,match='orientations disagree'): export_metashape(model,xml,out,.1)
+    assert not out.exists()
