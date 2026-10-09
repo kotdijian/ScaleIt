@@ -142,6 +142,24 @@ File → Export → Export Cameras（ファイル → エクスポート → カ
 
 生成された `cameras.txt` と `images.txt` の入ったフォルダをScale Bridgeのモデル入力に指定します。場所は出力構成によって異なるため、必ずしも `sparse/0` 固定ではありません。`points3D.txt` はなくても読み込めます。バイナリ形式を使う場合は `points3D.bin` も含む完全なモデルが必要です。
 
+#### `root/images` と `root/sparse/0` に書き出された場合
+
+Metashapeから、補正済み画像が `root/images`、`cameras.txt`・`images.txt`・`points3D.txt` が `root/sparse/0` に書き出された構成に対応しています。**ファイルを移動せず、GUIには次の2つのフォルダを個別に指定してください。rootだけを指定して下位フォルダを自動検出する機能は、現行版にはありません。**
+
+| GUIの入力欄 | 指定するフォルダ | 内容 |
+| --- | --- | --- |
+| COLMAP sparseフォルダ | `root/sparse/0` | `cameras.txt`、`images.txt`、`points3D.txt` |
+| 対応画像フォルダ | `root/images` | COLMAPと一緒に書き出した歪み補正画像 |
+
+例えば、Windowsで書き出し先のrootが `G:\MorphPot\ScaleIt` の場合は、次を指定します。
+
+| GUIの入力欄 | Windowsでの指定例 |
+| --- | --- |
+| COLMAP sparseフォルダ | `G:\MorphPot\ScaleIt\sparse\0` |
+| 対応画像フォルダ | `G:\MorphPot\ScaleIt\images` |
+
+`images.txt` はカメラ・写真の情報を記録したテキストファイルで、画像フォルダ `images` とは別です。AgisoftカメラXMLは、次の手順で別途書き出してGUIの「MetashapeカメラXML」欄に指定します。
+
 **Scale Bridgeで目盛りをクリックする画像には、今回COLMAPと一緒に書き出した歪み補正画像を指定します。後でMetashapeでメッシュを生成する予定でも、この打点用画像は歪み補正画像です。** 画像フォルダは全画像のままでも、スケールの打点に使う画像だけをコピーしたものでも構いません。コピー時は `images.txt` に記録されたファイル名・相対パスを保持します。書き出した画像には追加のリサイズ・切り抜き・回転を行いません。
 
 ### 3. AgisoftカメラXMLを書き出す
