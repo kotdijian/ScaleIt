@@ -147,7 +147,9 @@ XML camera translationをks倍にし、rotationは不変とします。chunk rot
 
 GUIテスト: offscreen Qtでの起動、実際のマウスクリックによる画素座標の取得、写真切り替え、複数写真の打点→縮尺計算、入力変更による計算結果の無効化。
 
-未検証: 実際のMetashape Export Cameras XML、StandardへのImport Cameras、depth map/mesh生成後の実寸、Apple Siliconのインストール/GUI、実写真での精度。v0.1はこれらを確かめるための初期実装です。
+2026-10-09、利用者のApple M3 MacBook AirでPython 3.12.15・PySide6/Qt 6.12.0によるインストールとGUI起動を確認しました。環境とプラグイン探索の経過は[検証記録](TEST_RESULTS.md)を参照してください。
+
+未検証: 実際のMetashape Export Cameras XML、StandardへのImport Cameras、depth map/mesh生成後の実寸、Apple Siliconでの全テスト・実写真での精度。v0.1はこれらを確かめるための初期実装です。
 
 ## 8. 一次資料
 

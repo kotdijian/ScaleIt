@@ -1,0 +1,15 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv312*/
+venv/
+
+# macOS Finder metadata
+.DS_Store
+
+# Scale Bridge generated demos and temporary Qt diagnostic record
+/ScaleBridge/demo/
+/ScaleBridge/demo_output/
+/ScaleBridge/requirements-macos-py312-qt683.lock.txt

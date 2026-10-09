@@ -6,16 +6,77 @@ COLMAPのカメラ情報と対応写真から、写し込んだスケールの�
 
 ## Macでの起動
 
-Python 3.12を推奨します。フォルダを展開し、ターミナルでこのREADMEがあるフォルダに移動してください。
+**Apple M3 MacBook Air / macOS 27.0 / Homebrew Python 3.12.15 / PySide6・Qt 6.12.0でGUI起動を確認しました（2026-10-09、利用者による実機確認）。** 実写真での測定精度、AprilTag検出率、Metashape Standardとの往復は別途検証が必要です。
+
+ターミナルで、このREADMEと `gui.py` がある `ScaleBridge` フォルダに移動してください。仮想環境はホームディレクトリの `~/venvs/scalebridge` に作成します。この配置はリポジトリ外で、今回の起動確認に使用した構成です。
+
+### 初回セットアップ
+
+Python 3.12をインストール済みであることを確認して実行します。
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python gui.py
+python3.12 -m venv "$HOME/venvs/scalebridge"
+source "$HOME/venvs/scalebridge/bin/activate"
+python -m pip install -r requirements.txt "PySide6==6.12.0"
+python -m pip check
+env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH python gui.py
 ```
 
-初回に必要なパッケージをダウンロードします。以降の計算と画像表示はローカルで行い、写真はアップロードしません。PySide6/pycolmapのMac用wheelが使用するPython/OSに対応している必要があります。Linux・Python 3.12・pycolmap 4.2.1で検証しました。M3 Mac上では未検証です。
+すでに `~/venvs/scalebridge` を作成して起動確認済みの場合は、次の通常起動だけを実行してください。
+
+### 通常起動
+
+毎回、ターミナルで `ScaleBridge` フォルダに移動して実行します。
+
+```bash
+source "$HOME/venvs/scalebridge/bin/activate"
+env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH python gui.py
+```
+
+`env -u` は、その起動に限って既存のQtプラグインパス指定を外します。シェル設定を恒久変更しません。ソースを更新した後の依存パッケージ更新にも、同じ仮想環境を使用してください。
+
+```bash
+python -m pip install -r requirements.txt "PySide6==6.12.0"
+python -m pip check
+```
+
+初回の依存パッケージ取得にはネット接続が必要です。その後の計算と画像表示はローカルで行い、写真はアップロードしません。PySide6/pycolmapのMac用wheelが使用するPython/OSに対応している必要があります。`requirements.txt` は共通の対応範囲を示し、上のインストールコマンドでは実機起動を確認したPySide6の版を指定しています。
+
+### cocoaプラグインを探索できない場合
+
+今回の障害では、元のリポジトリ内仮想環境の `libqcocoa.dylib` が存在し、arm64対応・直接ロードも正常でした。一方でQtがプラグインを `hidden=True` と判定し、通常のファイル列挙では除外していました。外部仮想環境へ配置を変更し、Qt 6.12.0に戻した後、通常の起動コマンドでもGUI起動を確認しました。
+
+隠し判定がファイル属性、親フォルダ、同期機能のどれに由来するかは未確定です。すべてのリポジトリ内仮想環境で失敗するという意味ではありません。今回の障害を理由にQt 6.8.3へダウングレードする必要はありません。
+
+同じエラーが出る場合は、使用中のPythonとQtによる列挙を確認できます。
+
+```bash
+python - <<'PY'
+import sys
+from pathlib import Path
+import PySide6
+from PySide6.QtCore import QDir, QFileInfo, qVersion
+
+platforms = Path(PySide6.__file__).resolve().parent / "Qt/plugins/platforms"
+print("Python:", sys.executable)
+print("PySide6:", PySide6.__version__, "Qt:", qVersion())
+print("Platforms:", platforms)
+print("Qt files:", QDir(str(platforms)).entryList(QDir.Filter.Files))
+print("cocoa hidden:", QFileInfo(str(platforms / "libqcocoa.dylib")).isHidden())
+PY
+```
+
+今回確認できた構成では `Qt files` に `libqcocoa.dylib` が含まれます。プラグインが存在してもここに現れない場合、追加の再インストールに進む前に、隠し判定と環境の配置を確認してください。
+
+### 環境の記録と整理
+
+起動確認済みの仮想環境で、パッケージ構成をローカルに保存できます。
+
+```bash
+python -m pip freeze > requirements-macos-py312-qt612.lock.txt
+```
+
+このロックファイルはそのPCの環境記録です。別のOS・Python版で同一構成が動作することまでは保証しません。Qt 6.8.3用の暫定環境・ロックファイルと元の `.venv312` は、通常環境での起動確認後に整理できます。使用する環境は `~/venvs/scalebridge` です。
 
 ## Windows 11での起動
 
@@ -176,9 +237,9 @@ XMLの対象は、単一チャンク・参照座標なし・単眼カメラの�
 
 ## デモ
 
-同梱の`example_demo/complete_session.json`を「作業を再開」で読み込むと、合成画像と正解の打点を表示できます。`blank_session.json`は打点練習用です。
+同梱の`example_demo/complete_session.json`を「作業を再開」で読み込むと、合成画像と正解の打点を表示できます。`blank_session.json`は打点練習用です。相対パスを使用した配布用デモで、`result.json`は合成データの参考計算結果です。実写真の精度評価ではありません。
 
-実際の写真ではない、100 mmスケールを含む合成画像を生成できます。
+別の合成データを生成する場合は、未作成の`demo/`を出力先として使用できます。`demo/`はローカル生成物で、リポジトリには含めません。既存の出力先を指定すると生成を拒否するため、別名のフォルダを指定してください。
 
 ```bash
 python make_demo.py demo
@@ -189,10 +250,10 @@ python gui.py
 
 ## CLI
 
-GUIで保存したsessionを再計算し、カメラを出力します。
+同梱デモ、またはGUIで保存したsessionを再計算し、カメラを出力します。以下の例では、同梱の入力とローカルの出力先を分けています。
 
 ```bash
-python cli.py demo/complete_session.json --colmap-output demo/scaled_colmap --xml-output demo/scaled_cameras.xml --report demo/result.json
+python cli.py example_demo/complete_session.json --colmap-output demo_output/scaled_colmap --xml-output demo_output/scaled_cameras.xml --report demo_output/result.json
 ```
 
 ## テスト
@@ -208,10 +269,17 @@ QT_QPA_PLATFORM=offscreen python -m pytest -q
 
 - `core.py`: 計算・モデル入出力
 - `gui.py`: PySide6打点GUI
+- `markers.py`: AprilTag検出・規定スケール設定
 - `cli.py`: 保存sessionのバッチ処理
 - `make_demo.py`: 合成画像とXML・sessionの生成
 - `ALGORITHM.md`: 座標規約、数式、入力/出力書式、検証範囲
 - `tests/`: 数値およびGUIテスト
+- `example_demo/`: 配布用合成データ・相対パスのsession・参考計算結果
+- `gui_preview.png`: GUIの参考画像
+- `requirements.txt`: 共通の依存パッケージ範囲
+- `TEST_RESULTS.md`: 検証記録
+
+`__pycache__/`・`.DS_Store`・仮想環境・生成した`demo/`と`demo_output/`は配布ファイルに含めません。`.gitignore`で再混入を防止しています。
 
 ## 限界
 
