@@ -124,7 +124,7 @@ class CalculationError(ValueError):
         super().__init__('\n'.join(f'{p}: {reason}' for p,reason in failures.items()))
 
 
-def triangulate(model, observations, min_angle_deg=1.0, max_error_px=2.0, *, check_error=True):
+def triangulate(model, observations, min_angle_deg=1.0, max_error_px=10.0, *, check_error=True):
     """Observations: image name -> [x,y], one per image for one physical point."""
     if len(observations) < 2:
         raise ValueError('Each point needs observations from at least two images.')
@@ -169,7 +169,7 @@ def triangulate(model, observations, min_angle_deg=1.0, max_error_px=2.0, *, che
             'max_intersection_angle_deg':float(angle),'warnings':warnings}
 
 
-def solve(model, observations, bars, min_angle_deg=1.0, max_error_px=2.0):
+def solve(model, observations, bars, min_angle_deg=1.0, max_error_px=10.0):
     """bars=[{a,b,length_m,role:'scale'|'check',weight:1}]."""
     if not bars or not any(b.get('role','scale')=='scale' for b in bars):
         raise ValueError('At least one scale distance is required.')

@@ -190,3 +190,90 @@ def test_reprojection_failures_show_every_marker_and_invalidate(tmp_path):
     with pytest.raises(CalculationError): w.calculate()
     assert any(w.obs_table.item(r,4).text()=='計算不可' for r,(p,n,_) in enumerate(w.obs_rows) if p=='C')
     w.close()
+
+
+def test_navigation_and_new_default(tmp_path):
+    app=QApplication.instance() or QApplication([])
+    w=Window()
+    assert w.error.value()==10
+    assert not w.previous_photo.isEnabled() and not w.next_photo.isEnabled()
+    data=create_demo(tmp_path/'demo')
+    for k,v in data['paths'].items(): w.paths[k].setText(v)
+    w.load()
+    assert w.photo_counter.text()=='1 / 4' and not w.previous_photo.isEnabled()
+    w.point.setCurrentText('E'); w.add_observation(800,600)
+    w.next_photo.click()
+    assert w.photo_names.currentIndex()==1 and w.photo_counter.text()=='2 / 4'
+    assert len(w.observations['E'])==1
+    w.previous_photo.click(); assert w.photo_names.currentIndex()==0
+    w.photo_names.setCurrentIndex(3)
+    assert not w.next_photo.isEnabled()
+    w.step_photo(1); assert w.photo_names.currentIndex()==3
+    w.paths['images'].setText(str(tmp_path/'other'))
+    assert w.photo_counter.text()=='0 / 0' and not w.previous_photo.isEnabled() and not w.next_photo.isEnabled()
+    w.close()
+
+
+def test_automatic_detection_to_calculation(tmp_path):
+    from test_markers import preset,tag_images
+    from PySide6.QtWidgets import QMessageBox
+    from core import write_json
+    import time
+    import pytest
+    app=QApplication.instance() or QApplication([])
+    data=create_demo(tmp_path/'demo'); w=Window()
+    for k,v in data['paths'].items(): w.paths[k].setText(v)
+    w.load(); tag_images(w.model,tmp_path/'tags')
+    w.paths['images'].setText(str(tmp_path/'tags')); w.load()
+    w.set_preset(preset()); w.detect_and_calculate()
+    assert not w.centralWidget().isEnabled()
+    deadline=time.monotonic()+15
+    while w.auto_worker is not None and time.monotonic()<deadline:
+        app.processEvents(); QTest.qWait(10)
+    assert w.auto_worker is None and w.centralWidget().isEnabled()
+    assert w.result['meters_per_model_unit']==pytest.approx(.1,rel=.005)
+    assert w.bars.rowCount()==2 and w.bars.item(1,3).text()=='check'
+    assert w.result['automatic_detection']['counts']=={'A':4,'B':4,'C':4}
+    assert all(w.obs_table.item(r,4).text()!='—' for r in range(w.obs_table.rowCount()))
+    w.close()
+
+
+def test_failed_auto_scan_keeps_existing_observations(tmp_path,monkeypatch):
+    from test_markers import preset
+    from PySide6.QtWidgets import QMessageBox
+    from pathlib import Path
+    import time
+    app=QApplication.instance() or QApplication([])
+    data=create_demo(tmp_path/'demo'); w=Window()
+    for k,v in data['paths'].items(): w.paths[k].setText(v)
+    w.load(); w.observations=data['observations']; w.calculate()
+    w.set_preset(preset())
+    old=json.loads(json.dumps(w.observations)); old_distances=w.distances()
+    (Path(data['paths']['images'])/w.photo_names.itemText(0)).write_bytes(b'broken')
+    monkeypatch.setattr(QMessageBox,'warning',lambda *args:None)
+    w.detect_and_calculate()
+    deadline=time.monotonic()+10
+    while w.auto_worker is not None and time.monotonic()<deadline:
+        app.processEvents(); QTest.qWait(10)
+    assert w.auto_worker is None and w.centralWidget().isEnabled()
+    assert w.observations==old and w.distances()==old_distances and w.result is None
+    assert '読み込めません' in w.report.toPlainText()
+    w.close()
+
+
+def test_preset_dialog_and_saved_threshold(tmp_path,monkeypatch):
+    from gui import PresetDialog
+    from test_markers import preset
+    from PySide6.QtWidgets import QFileDialog
+    from core import write_json
+    app=QApplication.instance() or QApplication([])
+    dialog=PresetDialog(preset()); dialog.accept_checked()
+    assert dialog.preset==preset()
+    data=create_demo(tmp_path/'demo'); data['max_error_px']=2
+    data['scale_preset']=preset(); path=tmp_path/'session.json'; write_json(path,data)
+    monkeypatch.setattr(QFileDialog,'getOpenFileName',lambda *args:(str(path),'JSON'))
+    w=Window(); w.open_session()
+    assert w.error.value()==2 and w.scale_preset==preset()
+    del data['max_error_px']; write_json(path,data); w.open_session()
+    assert w.error.value()==10
+    w.close()

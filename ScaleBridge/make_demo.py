@@ -50,7 +50,7 @@ def create_demo(destination):
     data={'version':VERSION,'paths':{'model':str(sparse),'images':str(images),'xml':str(xml)},
           'model_fingerprint':model.signature,'observations':observations,
           'bars':[{'a':'A','b':'B','length_m':.1,'role':'scale'},{'a':'A','b':'C','length_m':.08,'role':'check'}],
-          'min_angle_deg':1,'max_error_px':2}
+          'min_angle_deg':1,'max_error_px':10}
     write_json(destination/'complete_session.json',data)
     write_json(destination/'blank_session.json',{**data,'observations':{}})
     return data

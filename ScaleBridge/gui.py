@@ -3,14 +3,15 @@ import json
 import sys
 from pathlib import Path
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QImageReader, QPixmap, QColor, QPen, QPainter, QCursor
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QPushButton, QLabel, QLineEdit, QComboBox, QDoubleSpinBox,
     QFileDialog, QMessageBox, QGraphicsView, QGraphicsScene, QGraphicsItem,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QPlainTextEdit,
-    QFormLayout, QGroupBox)
+    QFormLayout, QGroupBox, QDialog, QDialogButtonBox, QScrollArea)
 from core import Model, solve, CalculationError, export_colmap, export_metashape, write_json, VERSION
+from markers import FAMILIES, validate_preset, detect_scale
 
 
 class PhotoView(QGraphicsView):
@@ -99,6 +100,59 @@ class PhotoView(QGraphicsView):
                 self.marks.append(line)
 
 
+class PresetDialog(QDialog):
+    def __init__(self,preset=None,parent=None):
+        super().__init__(parent); self.setWindowTitle('規定マーカースケール設定'); self.resize(650,550)
+        layout=QVBoxLayout(self); form=QFormLayout()
+        self.name=QLineEdit(); self.family=QComboBox(); self.family.addItems(FAMILIES)
+        form.addRow('設定名',self.name); form.addRow('AprilTagファミリー',self.family); layout.addLayout(form)
+        layout.addWidget(QLabel('印刷時と同じファミリー・IDを指定。使用しない点のIDは空欄にします。'))
+        self.ids=QTableWidget(5,2); self.ids.setHorizontalHeaderLabels(['点','印刷タグID'])
+        for r,p in enumerate('ABCDE'):
+            item=QTableWidgetItem(p); item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.ids.setItem(r,0,item); self.ids.setItem(r,1,QTableWidgetItem(''))
+        layout.addWidget(self.ids)
+        layout.addWidget(QLabel('実測したマーカー中心間距離（mm）。未使用の区間は端点・距離を空欄にします。'))
+        self.distances=QTableWidget(5,4); self.distances.setHorizontalHeaderLabels(['始点','終点','実寸 mm','用途'])
+        for r in range(5):
+            for c,v in enumerate(['','','','scale' if r<3 else 'check']): self.distances.setItem(r,c,QTableWidgetItem(v))
+        layout.addWidget(self.distances)
+        self.message=QLabel(); self.message.setWordWrap(True); layout.addWidget(self.message)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept_checked); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
+        if preset:
+            self.name.setText(preset.get('name','')); self.family.setCurrentText(preset['family'])
+            for r,p in enumerate('ABCDE'):
+                if p in preset['markers']: self.ids.item(r,1).setText(str(preset['markers'][p]))
+            for r,b in enumerate(preset['bars']):
+                for c,v in enumerate([b['a'],b['b'],str(b['length_mm']),b['role']]): self.distances.item(r,c).setText(v)
+    def accept_checked(self):
+        try:
+            ids={p:int(self.ids.item(r,1).text().strip()) for r,p in enumerate('ABCDE') if self.ids.item(r,1).text().strip()}
+            bars=[]
+            for r in range(5):
+                a,b,length,role=[self.distances.item(r,c).text().strip() for c in range(4)]
+                if not a and not b and not length: continue
+                bars.append({'a':a,'b':b,'length_mm':float(length),'role':role})
+            self.preset=validate_preset({'version':1,'type':'apriltag','name':self.name.text().strip(),
+                'family':self.family.currentText(),'markers':ids,'bars':bars})
+        except (ValueError,TypeError) as e:
+            self.message.setText(str(e)); return
+        self.accept()
+
+
+class DetectionWorker(QThread):
+    ready=Signal(object); failed=Signal(str); progress=Signal(int,int,str)
+    def __init__(self,preset,root,images,parent=None):
+        super().__init__(parent); self.preset=preset; self.root=root; self.images=images
+    def run(self):
+        try:
+            result=detect_scale(self.preset,self.root,self.images,
+                progress=lambda i,n,name:self.progress.emit(i,n,name))
+        except Exception as e: self.failed.emit(str(e))
+        else: self.ready.emit(result)
+
+
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -106,6 +160,7 @@ class Window(QMainWindow):
         self.resize(1350,950)
         self.model=None; self.observations={}; self.result=None
         self.diagnostics={}; self.diagnostic_failures={}
+        self.scale_preset=None; self.auto_worker=None
         self.current_name=None; self.image_valid=False
         root=QWidget(); self.setCentralWidget(root); layout=QVBoxLayout(root)
         self.paths={}
@@ -133,9 +188,18 @@ class Window(QMainWindow):
         self.photo_names=QComboBox(); self.photo_names.currentTextChanged.connect(self.show_photo)
         self.photo_names.setEnabled(False)
         ll.addWidget(self.photo_names)
+        nav=QHBoxLayout()
+        self.previous_photo=self.button(nav,'前へ',lambda:self.step_photo(-1))
+        self.next_photo=self.button(nav,'次へ',lambda:self.step_photo(1))
+        self.photo_counter=QLabel('0 / 0'); nav.addWidget(self.photo_counter)
+        ll.addLayout(nav)
+        self.photo_names.currentIndexChanged.connect(self.update_navigation)
+        self.update_navigation()
         self.photo=PhotoView(); self.photo.clicked.connect(self.add_observation); ll.addWidget(self.photo,1)
         self.photo_status=QLabel('未読み込み'); ll.addWidget(self.photo_status); splitter.addWidget(left)
-        right=QWidget(); rl=QVBoxLayout(right); splitter.addWidget(right); splitter.setSizes([850,450])
+        right=QWidget(); rl=QVBoxLayout(right)
+        right_scroll=QScrollArea(); right_scroll.setWidgetResizable(True); right_scroll.setWidget(right)
+        splitter.addWidget(right_scroll); splitter.setSizes([850,450])
         row=QHBoxLayout(); row.addWidget(QLabel('打点する点名'))
         self.point=QComboBox(); self.point.addItems(['A','B','C','D','E'])
         row.addWidget(self.point); rl.addLayout(row)
@@ -154,10 +218,20 @@ class Window(QMainWindow):
         row=QHBoxLayout(); self.button(row,'距離を追加',self.add_bar); self.button(row,'距離を削除',self.delete_bar)
         rl.addLayout(row); self.add_bar()
         settings=QGroupBox('計算の判定値'); form=QFormLayout(settings)
-        self.error=QDoubleSpinBox(); self.error.setRange(.01,100); self.error.setValue(2); self.error.setSuffix(' px')
+        self.error=QDoubleSpinBox(); self.error.setRange(.01,100); self.error.setValue(10); self.error.setSuffix(' px')
         self.angle=QDoubleSpinBox(); self.angle.setRange(.01,45); self.angle.setValue(1); self.angle.setSuffix(' °')
         for w in (self.error,self.angle): w.valueChanged.connect(self.invalidate)
         form.addRow('最大再投影誤差',self.error); form.addRow('最小交会角',self.angle); rl.addWidget(settings)
+        preset=QGroupBox('規定マーカースケール'); preset_layout=QVBoxLayout(preset)
+        preset_row=QHBoxLayout()
+        self.button(preset_row,'設定',self.configure_preset)
+        self.button(preset_row,'設定を読み込む',self.load_preset)
+        self.button(preset_row,'設定を保存',self.save_preset)
+        preset_layout.addLayout(preset_row)
+        self.preset_status=QLabel('未設定（AprilTagのIDと実測距離を登録）'); self.preset_status.setWordWrap(True)
+        preset_layout.addWidget(self.preset_status)
+        self.auto_button=self.button(preset_layout,'自動検出 → 距離適用 → 計算',self.detect_and_calculate)
+        rl.addWidget(preset)
         self.button(rl,'縮尺を計算',self.calculate)
         self.report=QPlainTextEdit(); self.report.setReadOnly(True); self.report.setMinimumHeight(150); rl.addWidget(self.report,1)
         row=QHBoxLayout(); self.unit=QComboBox(); self.unit.addItems(['m','mm']); row.addWidget(QLabel('COLMAP出力単位')); row.addWidget(self.unit)
@@ -169,6 +243,69 @@ class Window(QMainWindow):
     def guard(self,callback):
         try: callback()
         except Exception as e: QMessageBox.warning(self,'処理を完了できません',str(e))
+    def update_navigation(self,*args):
+        i=self.photo_names.currentIndex(); count=self.photo_names.count()
+        self.previous_photo.setEnabled(i>0)
+        self.next_photo.setEnabled(0<=i<count-1)
+        self.photo_counter.setText(f'{i+1 if i>=0 else 0} / {count}')
+    def step_photo(self,delta):
+        i=self.photo_names.currentIndex()+delta
+        if 0<=i<self.photo_names.count(): self.photo_names.setCurrentIndex(i)
+    def set_preset(self,preset):
+        self.scale_preset=validate_preset(preset)
+        label=self.scale_preset.get('name') or '規定スケール'
+        self.preset_status.setText(f"{label} / {self.scale_preset['family']} / {len(self.scale_preset['markers'])}点")
+        self.invalidate()
+    def configure_preset(self):
+        dialog=PresetDialog(self.scale_preset,self)
+        if dialog.exec()==QDialog.DialogCode.Accepted: self.set_preset(dialog.preset)
+    def load_preset(self):
+        name=QFileDialog.getOpenFileName(self,'規定スケール設定を読み込む','','JSON (*.json)')[0]
+        if name: self.set_preset(json.loads(Path(name).read_text(encoding='utf-8')))
+    def save_preset(self):
+        if not self.scale_preset: raise ValueError('先に規定マーカースケールを設定してください。')
+        name=QFileDialog.getSaveFileName(self,'規定スケール設定を保存','marker_scale.json','JSON (*.json)')[0]
+        if name: write_json(name,self.scale_preset)
+    def detect_and_calculate(self):
+        if not self.model: raise ValueError('COLMAPと画像を読み込んでください。')
+        if not self.scale_preset: raise ValueError('先に「設定」で印刷IDと実測中心間距離を登録してください。')
+        if self.auto_worker is not None and self.auto_worker.isRunning(): return
+        images=[(name,self.model.camera(name).width,self.model.camera(name).height)
+                for name in (self.photo_names.itemText(i) for i in range(self.photo_names.count()))]
+        if not images: raise ValueError('自動検出対象の画像がありません。')
+        self.invalidate()
+        self.auto_worker=DetectionWorker(self.scale_preset,self.paths['images'].text(),images,self)
+        self.auto_worker.ready.connect(lambda payload:self.guard(lambda:self.apply_detection(payload)))
+        self.auto_worker.failed.connect(self.detection_failed)
+        self.auto_worker.progress.connect(lambda i,n,name:self.preset_status.setText(f'検出中 {i} / {n}: {name}'))
+        self.auto_worker.finished.connect(self.finish_detection)
+        self.centralWidget().setEnabled(False)
+        self.preset_status.setText('自動検出を開始しています…'); self.auto_worker.start()
+    def finish_detection(self):
+        worker=self.auto_worker; self.auto_worker=None
+        if worker: worker.deleteLater()
+        self.centralWidget().setEnabled(True)
+    def detection_failed(self,message):
+        self.preset_status.setText('自動検出を停止しました。既存の打点・距離は保持しています。')
+        self.report.setPlainText(message)
+        QMessageBox.warning(self,'自動検出を完了できません',message)
+    def apply_detection(self,payload):
+        # Replace as one batch: no mixing of previous objects or manual sessions.
+        self.observations=payload['observations']
+        self.bars.blockSignals(True); self.bars.setRowCount(0)
+        for b in payload['bars']:
+            r=self.bars.rowCount(); self.bars.insertRow(r)
+            for c,v in enumerate([b['a'],b['b'],str(b['length_m']*1000),b['role']]): self.bars.setItem(r,c,QTableWidgetItem(v))
+        self.bars.blockSignals(False)
+        self.invalidate(); self.refresh_observations(); self.refresh_markers()
+        counts=payload['detection']['counts']
+        self.preset_status.setText('検出完了: '+', '.join(f'{p}={n}枚' for p,n in counts.items()))
+        self.calculate()  # Includes all-marker diagnostics even when thresholds fail.
+        self.result['automatic_detection']=payload['detection']
+    def closeEvent(self,event):
+        if self.auto_worker is not None and self.auto_worker.isRunning():
+            self.preset_status.setText('検出処理中です。完了後に閉じてください。'); event.ignore(); return
+        super().closeEvent(event)
     def browse(self,key,directory):
         p=QFileDialog.getExistingDirectory(self,'フォルダ選択') if directory else QFileDialog.getOpenFileName(self,'カメラXMLを選択','','XML (*.xml)')[0]
         if p: self.paths[key].setText(p)
@@ -183,6 +320,7 @@ class Window(QMainWindow):
         if hasattr(self,'photo_names'):
             self.photo_names.blockSignals(True); self.photo_names.clear(); self.photo_names.blockSignals(False)
             self.photo_names.setEnabled(False); self.photo.clear()
+            self.update_navigation()
             self.photo_status.setText('入力先が変更されました。「読み込み」を押してください。')
             self.image_summary.setText('未読み込み')
         self.invalidate()
@@ -199,6 +337,7 @@ class Window(QMainWindow):
         self.photo_names.blockSignals(True); self.photo_names.clear()
         self.photo_names.addItems(available); self.photo_names.blockSignals(False)
         self.photo_names.setEnabled(bool(available))
+        self.update_navigation()
         self.image_summary.setText(
             f'打点用画像: {len(available)}枚 / COLMAP登録: {len(candidate.images)}台 / '
             f'画像未配置: {len(candidate.images)-len(available)}枚\n'
@@ -319,7 +458,7 @@ class Window(QMainWindow):
         name=QFileDialog.getSaveFileName(self,'作業を保存','scale_session.json','JSON (*.json)')[0]
         if name:write_json(name,{'version':VERSION,'paths':{k:w.text() for k,w in self.paths.items()},
             'model_fingerprint':self.model.signature,'observations':self.observations,'bars':self.distances(),
-            'min_angle_deg':self.angle.value(),'max_error_px':self.error.value()})
+            'min_angle_deg':self.angle.value(),'max_error_px':self.error.value(),'scale_preset':self.scale_preset})
     def open_session(self):
         name=QFileDialog.getOpenFileName(self,'作業を再開','','JSON (*.json)')[0]
         if not name:return
@@ -336,7 +475,10 @@ class Window(QMainWindow):
             r=self.bars.rowCount(); self.bars.insertRow(r)
             for c,v in enumerate([b['a'],b['b'],str(b['length_m']*1000),b.get('role','scale')]):
                 self.bars.setItem(r,c,QTableWidgetItem(v))
-        self.angle.setValue(data.get('min_angle_deg',1)); self.error.setValue(data.get('max_error_px',2))
+        self.angle.setValue(data.get('min_angle_deg',1)); self.error.setValue(data.get('max_error_px',10))
+        if data.get('scale_preset'): self.set_preset(data['scale_preset'])
+        else:
+            self.scale_preset=None; self.preset_status.setText('未設定（AprilTagのIDと実測距離を登録）')
         self.invalidate(); self.refresh_observations(); self.refresh_markers()
 
 

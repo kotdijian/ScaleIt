@@ -16,7 +16,7 @@ def main():
         if value and not Path(value).is_absolute():data['paths'][key]=str((args.session.parent/value).resolve())
     model=Model(data['paths']['model'])
     if model.signature!=data['model_fingerprint']:raise ValueError('Model changed since session was saved.')
-    report=solve(model,data['observations'],data['bars'],data.get('min_angle_deg',1),data.get('max_error_px',2))
+    report=solve(model,data['observations'],data['bars'],data.get('min_angle_deg',1),data.get('max_error_px',10))
     if args.colmap_output:export_colmap(model,args.colmap_output,report['meters_per_model_unit'],args.unit)
     if args.xml_output:
         report['metashape_export']=export_metashape(model,data['paths']['xml'],args.xml_output,report['meters_per_model_unit'])
